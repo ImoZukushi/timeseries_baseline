@@ -1,0 +1,33 @@
+[project]
+name = "ac2026"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastexcel>=0.21.0",
+    "openpyxl>=3.1.5",
+    "polars>=1.44.2",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_ignores = true
+no_implicit_optional = true
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
