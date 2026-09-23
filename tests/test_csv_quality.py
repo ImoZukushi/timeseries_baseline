@@ -319,9 +319,7 @@ def test_plot_scatter_matrix_creates_file_for_three_columns(tmp_path: Path) -> N
         }
     )
     out_path = tmp_path / "scatter3.png"
-    created = cq.plot_scatter_matrix(
-        df, ["a", "b", "c"], ["a", "b", "c"], "sample", 4, out_path
-    )
+    created = cq.plot_scatter_matrix(df, ["a", "b", "c"], ["a", "b", "c"], "sample", 4, out_path)
     assert created is True
     assert out_path.exists()
 
@@ -444,9 +442,7 @@ def test_plot_scatter_matrix_respects_custom_alpha(
 
     monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
     df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
-    cq.plot_scatter_matrix(
-        df, ["a", "b"], ["a", "b"], "sample", 3, tmp_path / "out.png", alpha=0.7
-    )
+    cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 3, tmp_path / "out.png", alpha=0.7)
 
     assert captured_alphas
     assert all(a == pytest.approx(0.7) for a in captured_alphas)

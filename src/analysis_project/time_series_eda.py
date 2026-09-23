@@ -34,8 +34,8 @@ import polars as pl
 import seaborn as sns
 from statsmodels.tsa.stattools import acf, pacf
 
-from analysis_project.csv_quality import add_caption, ensure_japanese_font
-from analysis_project.paths import sanitize_filename_component
+from util.paths import sanitize_filename_component
+from util.plotting import add_caption, ensure_japanese_font
 
 # ACF/PACF計算に用いる最大点数。これを超える場合は直近この件数のみを使用する。
 DEFAULT_MAX_ACF_POINTS = 20_000

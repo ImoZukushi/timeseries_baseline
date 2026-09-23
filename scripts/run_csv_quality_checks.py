@@ -40,8 +40,8 @@ import polars as pl
 import seaborn as sns
 
 from analysis_project.csv_quality import make_dataset_name, read_csv_auto, run_quality_checks
-from analysis_project.paths import data_dir, outputs_dir
 from analysis_project.time_series_eda import run_time_series_checks
+from util.paths import data_dir, outputs_dir
 
 
 def main() -> None:
