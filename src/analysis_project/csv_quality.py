@@ -27,6 +27,8 @@ import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
 
+from analysis_project.paths import sanitize_filename_component
+
 
 def ensure_japanese_font() -> None:
     """日本語フォントをmatplotlibに設定する。
@@ -491,10 +493,36 @@ def plot_categorical_top_values(
     return True
 
 
+def complete_case_correlation(
+    df: pl.DataFrame, numeric_cols: list[str]
+) -> tuple[pl.DataFrame, int]:
+    """数値カラムのいずれかに欠損値がある行を除外してピアソン相関係数を算出する。
+
+    polarsの `DataFrame.corr()` は、対象カラムに欠損値を含む行が1件でもあると
+    相関行列全体がNaNになってしまうため、事前にリストワイズ削除（対象カラムの
+    いずれかがnullの行をまとめて除外）してから算出する。
+
+    Args:
+        df: 対象のDataFrame。
+        numeric_cols: 相関係数を算出する数値カラム名のリスト（2列以上）。
+
+    Returns:
+        (相関行列のDataFrame, 欠損値により除外した行数) のタプル。
+    """
+    numeric_df = df.select(numeric_cols)
+    complete_df = numeric_df.drop_nulls()
+    n_excluded = numeric_df.height - complete_df.height
+    return complete_df.corr(), n_excluded
+
+
 def plot_correlation_heatmap(
     df: pl.DataFrame, dataset_name: str, n_rows: int, output_path: Path
 ) -> bool:
     """数値カラム間のピアソン相関係数をヒートマップとして保存する。
+
+    数値カラムのいずれかに欠損値がある行は、相関係数の算出前に除外する
+    （polarsの `corr()` は欠損値を含む行があると全体がNaNになるため）。
+    除外した場合は、除外した行数をキャプションに明記する。
 
     Args:
         df: 対象のDataFrame。
@@ -503,13 +531,17 @@ def plot_correlation_heatmap(
         output_path: 保存先のPNGパス。
 
     Returns:
-        図を保存した場合は True、数値カラムが2列未満で作成しなかった場合は False。
+        図を保存した場合は True、数値カラムが2列未満、または欠損値を除いた結果
+        相関係数を算出できるサンプルが2件未満だった場合は False。
     """
     numeric_cols = [c for c in df.columns if df.schema[c].is_numeric()]
     if len(numeric_cols) < 2:
         return False
 
-    corr = df.select(numeric_cols).corr()
+    corr, n_excluded = complete_case_correlation(df, numeric_cols)
+    n_valid = n_rows - n_excluded
+    if n_valid < 2:
+        return False
 
     ensure_japanese_font()
     fig, ax = plt.subplots(
@@ -528,7 +560,10 @@ def plot_correlation_heatmap(
         ax=ax,
     )
     ax.set_title(f"{dataset_name}: 数値カラム間の相関係数（ピアソン）")
-    add_caption(fig, f"対象: {dataset_name} (n={n_rows:,}行) — 数値カラム間のピアソン相関係数。")
+    caption = f"対象: {dataset_name} (n={n_rows:,}行) — 数値カラム間のピアソン相関係数。"
+    if n_excluded > 0:
+        caption += f" 欠損値を含む{n_excluded:,}行を除外して算出（有効サンプル数: {n_valid:,}）。"
+    add_caption(fig, caption)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
@@ -596,6 +631,155 @@ def plot_record_pattern(
     return True
 
 
+def chunk_numeric_columns(columns: list[str], max_per_chunk: int = 3) -> list[list[str]]:
+    """カラム名のリストを、先頭から `max_per_chunk` 列ずつのグループに分割する。
+
+    Args:
+        columns: 分割対象のカラム名リスト。
+        max_per_chunk: 1グループに含める最大カラム数。
+
+    Returns:
+        カラム名のリストのリスト（各要素が1グループ）。`columns` が空なら空リスト。
+    """
+    return [columns[i : i + max_per_chunk] for i in range(0, len(columns), max_per_chunk)]
+
+
+def plot_scatter_matrix(
+    df: pl.DataFrame,
+    row_columns: list[str],
+    col_columns: list[str],
+    dataset_name: str,
+    n_rows: int,
+    output_path: Path,
+    alpha: float = 0.3,
+) -> bool:
+    """指定した行カラム×列カラムの組み合わせについて散布図行列を保存する。
+
+    セルの行カラムと列カラムが同じ場合（`row_columns` と `col_columns` に共通のカラムが
+    使われる場合）のみ、そのセルはヒストグラム（該当カラムの分布）にする。それ以外は
+    散布図とし、`alpha` で点を半透明にしてデータの重なりが濃淡で表現されるようにする。
+    各セルは、そのセルで使う2列（ヒストグラムの場合は1列）に欠損値を含む行を除いて描画する。
+
+    `row_columns` と `col_columns` が同じカラム集合であれば正方形の行列（対角がヒストグラム）
+    になり、互いに素なカラム集合であれば長方形の行列（対角なし、全セル散布図）になる。
+
+    Args:
+        df: 対象のDataFrame。
+        row_columns: 行（縦軸）に配置する数値カラム名。
+        col_columns: 列（横軸）に配置する数値カラム名。
+        dataset_name: 図のタイトル・キャプションに使うデータセット識別名。
+        n_rows: 元データの行数。
+        output_path: 保存先のPNGパス。
+        alpha: 散布図の点の透明度（0に近いほど透明。重なりを濃淡で表現するために使う）。
+
+    Returns:
+        図を保存した場合は True、行または列のカラムが空で作成しなかった場合は False。
+    """
+    if not row_columns or not col_columns:
+        return False
+
+    n_row = len(row_columns)
+    n_col = len(col_columns)
+    ensure_japanese_font()
+    fig, axes = plt.subplots(
+        n_row, n_col, figsize=(3.2 * n_col, 3.2 * n_row), constrained_layout=True, squeeze=False
+    )
+    color = sns.color_palette("muted")[0]
+
+    for i, row_col in enumerate(row_columns):
+        for j, col_col in enumerate(col_columns):
+            ax = axes[i][j]
+            if row_col == col_col:
+                values = df[row_col].drop_nulls().to_numpy()
+                if values.size > 0:
+                    ax.hist(values, bins=30, color=color)
+            else:
+                pair = df.select([col_col, row_col]).drop_nulls()
+                if pair.height > 0:
+                    ax.scatter(
+                        pair[col_col],
+                        pair[row_col],
+                        alpha=alpha,
+                        s=10,
+                        color=color,
+                        edgecolors="none",
+                    )
+            if i == n_row - 1:
+                ax.set_xlabel(col_col, fontsize=9)
+            if j == 0:
+                ax.set_ylabel(row_col, fontsize=9)
+
+    row_label = " / ".join(row_columns)
+    col_label = " / ".join(col_columns)
+    title_cols = row_label if row_columns == col_columns else f"{row_label} × {col_label}"
+    fig.suptitle(f"{dataset_name}: 散布図行列（{title_cols}）")
+    add_caption(
+        fig,
+        f"対象: {dataset_name} (n={n_rows:,}行) — 縦横で同じカラムのセルはヒストグラム、"
+        f"それ以外は散布図（点の透明度alpha={alpha}で重なりを濃淡表現）。"
+        "各散布図は該当2列の欠損値を除いて描画。",
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return True
+
+
+def plot_scatter_matrices(
+    df: pl.DataFrame,
+    dataset_name: str,
+    n_rows: int,
+    figures_dir: Path,
+    max_cols_per_image: int = 3,
+    alpha: float = 0.3,
+) -> list[Path]:
+    """数値カラムを `max_cols_per_image` 列ずつのグループに分割し、
+    グループ同士のすべての組み合わせについて散布図行列を保存する。
+
+    グループが2つ以上ある場合、同一グループ同士（正方形、対角がヒストグラム）だけでなく
+    異なるグループ同士（長方形、全セル散布図）の組み合わせも作成することで、
+    全カラムの総当たりの組み合わせに抜け漏れが出ないようにする。グループ(i, j)と
+    グループ(j, i)は縦横を入れ替えただけの同じ組み合わせを表すため、i <= j の場合のみ
+    作成する。
+
+    Args:
+        df: 対象のDataFrame。
+        dataset_name: 出力ファイル名・図のタイトルに使うデータセット識別名。
+        n_rows: 元データの行数。
+        figures_dir: 図の出力先ディレクトリ。
+        max_cols_per_image: 1画像に含める最大カラム数（縦・横それぞれ）。
+        alpha: 散布図の点の透明度。
+
+    Returns:
+        作成した画像ファイルのパスのリスト。
+    """
+    numeric_cols = [c for c in df.columns if df.schema[c].is_numeric()]
+    chunks = chunk_numeric_columns(numeric_cols, max_cols_per_image)
+
+    created: list[Path] = []
+    for i, row_chunk in enumerate(chunks):
+        for j, col_chunk in enumerate(chunks):
+            if i > j:
+                continue  # (j, i) は (i, j) の縦横を入れ替えただけなので重複作成しない
+            if i == j and len(row_chunk) < 2:
+                continue  # 1列だけの自己組み合わせはヒストグラム1枚のみになるため対象外
+
+            row_suffix = sanitize_filename_component("_".join(row_chunk))
+            if i == j:
+                name = f"{dataset_name}__scatter_matrix__{row_suffix}.png"
+            else:
+                col_suffix = sanitize_filename_component("_".join(col_chunk))
+                name = f"{dataset_name}__scatter_matrix__{row_suffix}__x__{col_suffix}.png"
+            output_path = figures_dir / name
+
+            if plot_scatter_matrix(
+                df, row_chunk, col_chunk, dataset_name, n_rows, output_path, alpha=alpha
+            ):
+                created.append(output_path)
+    return created
+
+
 def make_dataset_name(path: Path, raw_dir: Path) -> str:
     """CSVファイルのパスから出力ファイル名に使うデータセット識別名を作る。
 
@@ -659,5 +843,6 @@ def run_quality_checks(
     plot_record_pattern(
         df, dataset_name, n_rows, figures_dir / f"{dataset_name}__record_pattern.png"
     )
+    plot_scatter_matrices(df, dataset_name, n_rows, figures_dir)
 
     return df_overview, col_overview

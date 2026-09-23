@@ -35,6 +35,7 @@ import seaborn as sns
 from statsmodels.tsa.stattools import acf, pacf
 
 from analysis_project.csv_quality import add_caption, ensure_japanese_font
+from analysis_project.paths import sanitize_filename_component
 
 # ACF/PACF計算に用いる最大点数。これを超える場合は直近この件数のみを使用する。
 DEFAULT_MAX_ACF_POINTS = 20_000
@@ -49,25 +50,6 @@ SERIES_LABELS: dict[str, str] = {
     "seasonal_log_diff": "季節対数差分系列",
 }
 _SERIES_GRID_ORDER = list(SERIES_LABELS)
-
-
-_FILENAME_UNSAFE_CHARS = str.maketrans({c: "_" for c in '\\/:*?"<>|'})
-
-
-def sanitize_filename_component(text: str) -> str:
-    """ファイル名に使えない文字（Windowsで禁止されている記号）をアンダースコアに置き換える。
-
-    グループ列の値（例: 時刻文字列 "06:41:00"）がそのままファイル名の一部になる場合が
-    あるため、保存直前にこの関数でサニタイズする。図のタイトル・キャプションに使う
-    文字列は元の値のまま（サニタイズ前）を使う。
-
-    Args:
-        text: サニタイズ対象の文字列。
-
-    Returns:
-        `\\ / : * ? " < > |` をアンダースコアに置き換えた文字列。
-    """
-    return text.translate(_FILENAME_UNSAFE_CHARS)
 
 
 def find_datetime_column(df: pl.DataFrame) -> str | None:
@@ -525,7 +507,7 @@ def run_time_series_checks(
         for col in numeric_cols:
             values = sorted_df[col]
             series_dict = build_transformed_series(values, seasonal_period)
-            base = f"{group_name}__{col}"
+            base = sanitize_filename_component(f"{group_name}__{col}")
 
             plot_series_with_moving_average(
                 dt,

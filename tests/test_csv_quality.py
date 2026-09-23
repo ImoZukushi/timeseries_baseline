@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import polars as pl
 import pytest
 
@@ -191,6 +192,38 @@ def test_plot_correlation_heatmap_creates_file(tmp_path: Path) -> None:
     assert out_path.exists()
 
 
+def test_plot_correlation_heatmap_creates_file_with_nulls(tmp_path: Path) -> None:
+    # 欠損値を含んでいても（polarsのcorr()がNaNだけを返す状態にならず）図を作成できる
+    df = pl.DataFrame({"x": [1.0, 2.0, None, 4.0, 5.0], "y": [2.0, 4.0, 6.0, None, 10.0]})
+    out_path = tmp_path / "corr_with_nulls.png"
+    created = cq.plot_correlation_heatmap(df, "sample", 5, out_path)
+    assert created is True
+    assert out_path.exists()
+
+
+def test_plot_correlation_heatmap_false_when_too_few_complete_rows(tmp_path: Path) -> None:
+    df = pl.DataFrame({"x": [1.0, None, None], "y": [None, 2.0, None]})
+    created = cq.plot_correlation_heatmap(df, "sample", 3, tmp_path / "out.png")
+    assert created is False
+
+
+# --- complete_case_correlation ---------------------------------------------
+
+
+def test_complete_case_correlation_drops_rows_with_any_null() -> None:
+    df = pl.DataFrame({"x": [1.0, 2.0, None, 4.0], "y": [2.0, 4.0, 6.0, None]})
+    corr, n_excluded = cq.complete_case_correlation(df, ["x", "y"])
+    assert n_excluded == 2
+    assert corr["x"][1] == pytest.approx(1.0)  # x,yが完全に線形（残り2行）なので相関1.0
+
+
+def test_complete_case_correlation_no_nulls_excludes_nothing() -> None:
+    df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [3.0, 2.0, 1.0]})
+    corr, n_excluded = cq.complete_case_correlation(df, ["x", "y"])
+    assert n_excluded == 0
+    assert corr["x"][1] == pytest.approx(-1.0)
+
+
 def test_plot_record_pattern_creates_file(tmp_path: Path) -> None:
     df = pl.DataFrame({"x": list(range(100))})
     out_path = tmp_path / "pattern.png"
@@ -229,3 +262,254 @@ def test_run_quality_checks_end_to_end(tmp_path: Path) -> None:
     assert (tables_dir / "sample__column_overview.csv").exists()
     assert (figures_dir / "sample__missing_overview.png").exists()
     assert (figures_dir / "sample__numeric_histograms.png").exists()
+
+
+# --- chunk_numeric_columns ---------------------------------------------------
+
+
+def test_chunk_numeric_columns_empty_list() -> None:
+    assert cq.chunk_numeric_columns([]) == []
+
+
+def test_chunk_numeric_columns_fewer_than_max() -> None:
+    assert cq.chunk_numeric_columns(["a", "b"], max_per_chunk=3) == [["a", "b"]]
+
+
+def test_chunk_numeric_columns_exact_multiple() -> None:
+    columns = ["a", "b", "c", "d", "e", "f"]
+    assert cq.chunk_numeric_columns(columns, max_per_chunk=3) == [
+        ["a", "b", "c"],
+        ["d", "e", "f"],
+    ]
+
+
+def test_chunk_numeric_columns_with_remainder() -> None:
+    columns = ["a", "b", "c", "d"]
+    assert cq.chunk_numeric_columns(columns, max_per_chunk=3) == [["a", "b", "c"], ["d"]]
+
+
+# --- plot_scatter_matrix ------------------------------------------------------
+
+
+def test_plot_scatter_matrix_requires_nonempty_row_and_col(tmp_path: Path) -> None:
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
+    created = cq.plot_scatter_matrix(df, [], ["a"], "sample", 3, tmp_path / "out.png")
+    assert created is False
+    assert not (tmp_path / "out.png").exists()
+
+    created = cq.plot_scatter_matrix(df, ["a"], [], "sample", 3, tmp_path / "out2.png")
+    assert created is False
+
+
+def test_plot_scatter_matrix_creates_file_for_two_columns(tmp_path: Path) -> None:
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [4.0, 3.0, 2.0, 1.0]})
+    out_path = tmp_path / "scatter2.png"
+    created = cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 4, out_path)
+    assert created is True
+    assert out_path.exists()
+    assert out_path.stat().st_size > 0
+
+
+def test_plot_scatter_matrix_creates_file_for_three_columns(tmp_path: Path) -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [4.0, 3.0, 2.0, 1.0],
+            "c": [1.0, 1.0, 2.0, 2.0],
+        }
+    )
+    out_path = tmp_path / "scatter3.png"
+    created = cq.plot_scatter_matrix(
+        df, ["a", "b", "c"], ["a", "b", "c"], "sample", 4, out_path
+    )
+    assert created is True
+    assert out_path.exists()
+
+
+def test_plot_scatter_matrix_creates_file_for_single_cell_cross_block(tmp_path: Path) -> None:
+    # 行1列×列1列（異なるカラム同士）でも1セルの散布図として作成できる
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    out_path = tmp_path / "scatter1x1.png"
+    created = cq.plot_scatter_matrix(df, ["a"], ["b"], "sample", 3, out_path)
+    assert created is True
+    assert out_path.exists()
+
+
+def test_plot_scatter_matrix_creates_file_for_rectangular_block(tmp_path: Path) -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [4.0, 3.0, 2.0, 1.0],
+            "c": [1.0, 1.0, 2.0, 2.0],
+            "d": [2.0, 2.0, 3.0, 3.0],
+        }
+    )
+    out_path = tmp_path / "scatter_rect.png"
+    created = cq.plot_scatter_matrix(df, ["a", "b"], ["c", "d"], "sample", 4, out_path)
+    assert created is True
+    assert out_path.exists()
+
+
+def test_plot_scatter_matrix_handles_nulls_without_error(tmp_path: Path) -> None:
+    df = pl.DataFrame({"a": [1.0, None, 3.0, 4.0], "b": [4.0, 3.0, None, 1.0]})
+    out_path = tmp_path / "scatter_nulls.png"
+    created = cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 4, out_path)
+    assert created is True
+    assert out_path.exists()
+
+
+def test_plot_scatter_matrix_diagonal_only_when_row_col_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # row=[a,b], col=[a,c] -> 縦横で一致するのは "a" のセルだけなので、
+    # ヒストグラムは1回だけ、残り3セルは散布図になるはず。
+    hist_call_count = 0
+    scatter_call_count = 0
+    original_hist = plt.Axes.hist
+    original_scatter = plt.Axes.scatter
+
+    def fake_hist(self: plt.Axes, *args: object, **kwargs: object) -> object:
+        nonlocal hist_call_count
+        hist_call_count += 1
+        return original_hist(self, *args, **kwargs)
+
+    def fake_scatter(self: plt.Axes, *args: object, **kwargs: object) -> object:
+        nonlocal scatter_call_count
+        scatter_call_count += 1
+        return original_scatter(self, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "hist", fake_hist)
+    monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
+
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0], "c": [1.0, 1.0, 2.0]})
+    cq.plot_scatter_matrix(df, ["a", "b"], ["a", "c"], "sample", 3, tmp_path / "out.png")
+
+    assert hist_call_count == 1
+    assert scatter_call_count == 3
+
+
+def test_plot_scatter_matrix_no_diagonal_when_rows_and_cols_disjoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hist_call_count = 0
+    original_hist = plt.Axes.hist
+
+    def fake_hist(self: plt.Axes, *args: object, **kwargs: object) -> object:
+        nonlocal hist_call_count
+        hist_call_count += 1
+        return original_hist(self, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "hist", fake_hist)
+
+    df = pl.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0],
+            "b": [3.0, 2.0, 1.0],
+            "c": [1.0, 1.0, 2.0],
+            "d": [2.0, 2.0, 1.0],
+        }
+    )
+    cq.plot_scatter_matrix(df, ["a", "b"], ["c", "d"], "sample", 3, tmp_path / "out.png")
+
+    assert hist_call_count == 0
+
+
+def test_plot_scatter_matrix_uses_default_alpha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_alphas: list[float | None] = []
+    original_scatter = plt.Axes.scatter
+
+    def fake_scatter(self: plt.Axes, *args: object, **kwargs: object) -> object:
+        captured_alphas.append(kwargs.get("alpha"))  # type: ignore[arg-type]
+        return original_scatter(self, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 3, tmp_path / "out.png")
+
+    assert captured_alphas
+    assert all(a == pytest.approx(0.3) for a in captured_alphas)
+
+
+def test_plot_scatter_matrix_respects_custom_alpha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_alphas: list[float | None] = []
+    original_scatter = plt.Axes.scatter
+
+    def fake_scatter(self: plt.Axes, *args: object, **kwargs: object) -> object:
+        captured_alphas.append(kwargs.get("alpha"))  # type: ignore[arg-type]
+        return original_scatter(self, *args, **kwargs)
+
+    monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    cq.plot_scatter_matrix(
+        df, ["a", "b"], ["a", "b"], "sample", 3, tmp_path / "out.png", alpha=0.7
+    )
+
+    assert captured_alphas
+    assert all(a == pytest.approx(0.7) for a in captured_alphas)
+
+
+# --- plot_scatter_matrices -----------------------------------------------------
+
+
+def test_plot_scatter_matrices_requires_two_numeric_columns(tmp_path: Path) -> None:
+    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "c": ["x", "y", "z"]})
+    created = cq.plot_scatter_matrices(df, "sample", 3, tmp_path)
+    assert created == []
+
+
+def test_plot_scatter_matrices_covers_all_combinations_without_omission(
+    tmp_path: Path,
+) -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [4.0, 3.0, 2.0, 1.0],
+            "c": [1.0, 1.0, 2.0, 2.0],
+            "d": [2.0, 2.0, 3.0, 3.0],
+            "e": [5.0, 4.0, 3.0, 2.0],
+        }
+    )
+    created = cq.plot_scatter_matrices(df, "sample", 4, tmp_path, max_cols_per_image=3)
+    # 5列 -> [a,b,c](3列) と [d,e](2列)。総当たりの漏れがないよう
+    # (3x3の対角), (3x2の交差), (2x2の対角) の3枚が作成される。
+    assert len(created) == 3
+    names = {p.name for p in created}
+    assert "sample__scatter_matrix__a_b_c.png" in names
+    assert "sample__scatter_matrix__a_b_c__x__d_e.png" in names
+    assert "sample__scatter_matrix__d_e.png" in names
+    for path in created:
+        assert path.exists()
+
+
+def test_plot_scatter_matrices_lone_trailing_column_still_covered_via_cross_block(
+    tmp_path: Path,
+) -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1.0, 2.0, 3.0, 4.0],
+            "b": [4.0, 3.0, 2.0, 1.0],
+            "c": [1.0, 1.0, 2.0, 2.0],
+            "d": [2.0, 2.0, 3.0, 3.0],
+        }
+    )
+    created = cq.plot_scatter_matrices(df, "sample", 4, tmp_path, max_cols_per_image=3)
+    # 4列 -> [a,b,c](3列) と [d](1列)。
+    # dだけの自己組み合わせ(1x1)は対象外だが、[a,b,c]×[d]の交差(3x1)でdの関係は網羅される。
+    names = {p.name for p in created}
+    assert names == {
+        "sample__scatter_matrix__a_b_c.png",
+        "sample__scatter_matrix__a_b_c__x__d.png",
+    }
+
+
+def test_plot_scatter_matrices_sanitizes_unsafe_column_names_in_filename(tmp_path: Path) -> None:
+    df = pl.DataFrame({"a/b": [1.0, 2.0, 3.0], "c:d": [3.0, 2.0, 1.0]})
+    created = cq.plot_scatter_matrices(df, "sample", 3, tmp_path)
+    assert len(created) == 1
+    assert created[0].exists()
+    assert "/" not in created[0].name
+    assert ":" not in created[0].name

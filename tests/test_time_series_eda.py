@@ -307,6 +307,30 @@ def test_run_time_series_checks_grouped_panel_data(tmp_path: Path) -> None:
     assert (tmp_path / "sample_B__value__acf_correlogram.png").exists()
 
 
+def test_run_time_series_checks_sanitizes_group_value_in_filename(tmp_path: Path) -> None:
+    # グループ列の値に ":" が含まれるケース（例: 時刻文字列）でファイル名が壊れないことを確認する。
+    rng = np.random.default_rng(0)
+    n = 30
+    dates = [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)]
+    df = pl.concat(
+        [
+            pl.DataFrame(
+                {
+                    "ts": dates,
+                    "time_of_day": [time_str] * n,
+                    "value": np.abs(rng.normal(loc=10, scale=2, size=n)),
+                }
+            )
+            for time_str in ["06:41:00", "19:33:00"]
+        ]
+    )
+    result = tse.run_time_series_checks(df, "sample", tmp_path, nlags=5)
+    assert sorted(result) == ["sample_06:41:00:value", "sample_19:33:00:value"]
+    assert (tmp_path / "sample_06_41_00__value__series_with_moving_average.png").exists()
+    assert (tmp_path / "sample_19_33_00__value__acf_correlogram.png").exists()
+    assert not any(":" in p.name for p in tmp_path.glob("*.png"))
+
+
 def test_run_time_series_checks_unresolvable_duplicates_returns_empty(tmp_path: Path) -> None:
     df = pl.DataFrame(
         {

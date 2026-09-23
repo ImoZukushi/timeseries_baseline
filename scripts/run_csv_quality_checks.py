@@ -1,4 +1,4 @@
-"""data/raw配下の全CSVファイルに対してデータ品質確認・時系列EDAを実施するスクリプト。
+"""data/配下の指定ディレクトリの全CSVファイルに対してデータ品質確認・時系列EDAを実施するスクリプト。
 
 各CSVファイルについて、データフレーム全体の品質確認（行数・列数・重複行・欠損値の
 全体像・記録パターンの目視確認）とカラム単位の品質確認（型・欠損率・ユニーク数・
@@ -10,8 +10,12 @@
 季節対数差分系列）に対する時系列診断図（生値と移動平均、ACF/PACFのコレログラム）も
 `outputs/figures/` に保存する。
 
+走査対象は既定で `data/raw` だが、`--data-subdir` で `data/` 配下の任意のサブディレクトリ
+（`interim`, `processed` など）に切り替えられる。
+
 Usage:
     uv run python scripts/run_csv_quality_checks.py
+    uv run python scripts/run_csv_quality_checks.py --data-subdir interim
     uv run python scripts/run_csv_quality_checks.py --pattern "wind_0/*.csv"
     uv run python scripts/run_csv_quality_checks.py --moving-average-window 7 --seasonal-period 12
 """
@@ -41,10 +45,17 @@ from analysis_project.time_series_eda import run_time_series_checks
 
 
 def main() -> None:
-    """data/raw配下のCSVファイルを走査し、品質確認・時系列EDAの結果を出力する。"""
+    """data/配下の指定ディレクトリのCSVファイルを走査し、品質確認・時系列EDAの結果を出力する。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--pattern", default="**/*.csv", help="対象CSVのglobパターン（data/raw基準、既定: 全件）"
+        "--data-subdir",
+        default="raw",
+        help="走査対象とする `data/` 配下のサブディレクトリ名（既定: raw。例: interim, processed）",
+    )
+    parser.add_argument(
+        "--pattern",
+        default="**/*.csv",
+        help="対象CSVのglobパターン（--data-subdir基準、既定: 全件）",
     )
     parser.add_argument(
         "--moving-average-window", type=int, default=5, help="移動平均の窓幅（点数、既定: 5）"
@@ -59,13 +70,13 @@ def main() -> None:
 
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
 
-    raw_dir = data_dir() / "raw"
+    scan_dir = data_dir() / args.data_subdir
     figures_dir = outputs_dir() / "figures"
     tables_dir = outputs_dir() / "tables"
 
-    csv_paths = sorted(raw_dir.glob(args.pattern))
+    csv_paths = sorted(scan_dir.glob(args.pattern))
     if not csv_paths:
-        print(f"対象ファイルが見つかりません: {raw_dir}/{args.pattern}")
+        print(f"対象ファイルが見つかりません: {scan_dir}/{args.pattern}")
         return
 
     df_overviews: list[pl.DataFrame] = []
@@ -75,13 +86,13 @@ def main() -> None:
 
     for i, path in enumerate(csv_paths, 1):
         start = time.time()
-        print(f"[{i}/{len(csv_paths)}] {path.relative_to(raw_dir)} を処理中...", flush=True)
+        print(f"[{i}/{len(csv_paths)}] {path.relative_to(scan_dir)} を処理中...", flush=True)
         try:
-            dataset_name = make_dataset_name(path, raw_dir)
+            dataset_name = make_dataset_name(path, scan_dir)
             df = read_csv_auto(path)
 
             df_ov, col_ov = run_quality_checks(
-                df, dataset_name, str(path.relative_to(raw_dir)), figures_dir, tables_dir
+                df, dataset_name, str(path.relative_to(scan_dir)), figures_dir, tables_dir
             )
             df_overviews.append(df_ov)
             col_overviews.append(col_ov)

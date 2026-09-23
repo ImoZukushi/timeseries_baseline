@@ -43,3 +43,22 @@ def ensure_parent_dir(path: Path) -> Path:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+_FILENAME_UNSAFE_CHARS = str.maketrans({c: "_" for c in '\\/:*?"<>|'})
+
+
+def sanitize_filename_component(text: str) -> str:
+    """ファイル名に使えない文字（Windowsで禁止されている記号）をアンダースコアに置き換える。
+
+    カラム名やグループ列の値をそのままファイル名の一部にする場合、`/` や `:` などの
+    記号が含まれていると保存に失敗するため、保存直前にこの関数でサニタイズする。
+    図のタイトル・キャプションに使う文字列は元の値のまま（サニタイズ前）を使う。
+
+    Args:
+        text: サニタイズ対象の文字列。
+
+    Returns:
+        `\\ / : * ? " < > |` をアンダースコアに置き換えた文字列。
+    """
+    return text.translate(_FILENAME_UNSAFE_CHARS)
