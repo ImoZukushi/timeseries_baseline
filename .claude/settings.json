@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -m pytest *)",
+      "Bash(.venv/Scripts/python -m ruff check *)",
+      "Bash(uv run ruff check *)",
+      "Bash(.venv/Scripts/python -m mypy *)",
+      "Bash(uv run pytest *)",
+      "Bash(.venv/Scripts/python -m ruff format --check *)",
+      "Bash(uv run mypy *)",
+      "Bash(git check-ignore *)"
+    ]
+  }
+}
