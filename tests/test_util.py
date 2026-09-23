@@ -1,12 +1,23 @@
-"""util パッケージ（paths / plotting）のテスト。"""
+"""util パッケージ（paths / plotting / csv_io）のテスト。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import polars as pl
+import pytest
 
-from util import paths, plotting
+from util import csv_io, paths, plotting
+
+
+def _write_cp932(path: Path, content: str) -> None:
+    path.write_bytes(content.encode("cp932"))
+
+
+def _write_utf8(path: Path, content: str) -> None:
+    path.write_bytes(content.encode("utf-8"))
+
 
 # --- paths ---------------------------------------------------------------
 
@@ -64,3 +75,65 @@ def test_add_caption_adds_text_to_figure() -> None:
         assert fig.texts[-1].get_text() == "対象: sample — テストキャプション。"
     finally:
         plt.close(fig)
+
+
+# --- csv_io ------------------------------------------------------------------
+
+
+def test_detect_encoding_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "utf8.csv"
+    _write_utf8(path, "a,b\n1,あいう\n")
+    assert csv_io.detect_encoding(path) == "utf-8"
+
+
+def test_detect_encoding_cp932(tmp_path: Path) -> None:
+    path = tmp_path / "cp932.csv"
+    _write_cp932(path, "年月日時,風速\n2020-01-01,1.1\n")
+    assert csv_io.detect_encoding(path) == "cp932"
+
+
+def test_read_csv_auto_small_cp932(tmp_path: Path) -> None:
+    path = tmp_path / "small.csv"
+    _write_cp932(path, "地点,気温\n富山,9.4\n高田,8.2\n")
+    df = csv_io.read_csv_auto(path)
+    assert df.columns == ["地点", "気温"]
+    assert df["地点"].to_list() == ["富山", "高田"]
+
+
+def test_read_csv_auto_large_ascii_data_uses_lossy_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 大容量ファイル判定の閾値を下げて、lazy scan（utf8-lossy）経路を強制する。
+    monkeypatch.setattr(csv_io, "LARGE_FILE_THRESHOLD_BYTES", 10)
+    path = tmp_path / "large_ascii.csv"
+    header = "年月日時,風速(瞬時),風向(瞬時)\n"
+    rows = "\n".join(f"2020-01-01 00:00:{i:02d},{i * 0.1:.1f},{i}" for i in range(100))
+    _write_cp932(path, header + rows + "\n")
+
+    df = csv_io.read_csv_auto(path)
+
+    assert df.columns == ["年月日時", "風速(瞬時)", "風向(瞬時)"]
+    assert df.height == 100
+    assert df["風向(瞬時)"].to_list()[:3] == [0, 1, 2]
+
+
+def test_read_csv_auto_large_non_ascii_data_falls_back_to_full_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(csv_io, "LARGE_FILE_THRESHOLD_BYTES", 10)
+    path = tmp_path / "large_non_ascii.csv"
+    header = "地点,気温\n"
+    rows = "\n".join(["富山,9.4", "高田,8.2"] * 5)
+    _write_cp932(path, header + rows + "\n")
+
+    df = csv_io.read_csv_auto(path)
+
+    assert df.columns == ["地点", "気温"]
+    assert set(df["地点"].to_list()) == {"富山", "高田"}
+
+
+def test_read_csv_auto_parses_datetime_like_columns(tmp_path: Path) -> None:
+    path = tmp_path / "datetime.csv"
+    _write_utf8(path, "ts,value\n2020-01-01 00:00:00,1\n2020-01-02 00:00:00,2\n")
+    df = csv_io.read_csv_auto(path)
+    assert df.schema["ts"] == pl.Datetime
