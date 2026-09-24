@@ -1,0 +1,16 @@
+# 動作確認用のサンプル設定（定数予測ベースライン）。
+# 目的変数 `合計` は仮置き。`フェンダー部分(東京方向)` / `台車部分` / `フェンダー部分(金沢方向)` は
+# `合計` の内訳でありリークになるため除外している。
+name: example_dummy
+task: regression
+data:
+  train_path: data/processed/train_with_departure_time.csv
+  target: 合計
+  group_col: 年月日  # 同じ日のデータがtrain/validに跨らないようにする
+  drop_cols: [年月日, 発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]
+features:
+  - class: feature_engineering.categorical.PolarsOrdinalEncoder
+    params: {variables: [列車番号, 停車駅名]}
+cv: {method: group, n_splits: 5, seed: 42}
+model: {name: dummy}
+metrics: [rmse, mae]

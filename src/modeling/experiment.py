@@ -1,0 +1,250 @@
+"""1実験（データ読み込み → CV学習 → 予測保存 → ログ記録）の実行。
+
+CLI（`scripts/run_experiment.py`）とNotebookのどちらからも呼べるよう、
+データ準備（`prepare_dataset`）と実行（`run_experiment`）を分けている。
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import polars as pl
+import yaml
+
+from modeling.config import ExperimentConfig
+from modeling.cv import Fold, make_folds
+from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_predictions
+from modeling.tasks import encode_target
+from modeling.tracking import NullTracker, Tracker
+from modeling.trainer import CVResult, run_cv
+from util.csv_io import read_csv_auto
+from util.paths import ensure_parent_dir, get_repo_root, outputs_dir
+
+
+@dataclass
+class Dataset:
+    """学習・予測に使うデータ一式。
+
+    Attributes:
+        X: 学習データの特徴量。
+        y: エンコード済みの目的変数。
+        classes: 分類タスクの元のクラスラベル（回帰ではNone）。
+        folds: CV分割。
+        ids: 学習データの行ID（`data.id_col` 指定時）。
+        X_test: テストデータの特徴量。
+        ids_test: テストデータの行ID。
+    """
+
+    X: pl.DataFrame
+    y: np.ndarray
+    classes: np.ndarray | None
+    folds: list[Fold]
+    ids: pl.Series | None = None
+    X_test: pl.DataFrame | None = None
+    ids_test: pl.Series | None = None
+
+    @property
+    def n_classes(self) -> int | None:
+        """分類タスクのクラス数。"""
+        return None if self.classes is None else len(self.classes)
+
+
+@dataclass
+class ExperimentResult:
+    """実験結果。
+
+    Attributes:
+        cv_result: CV学習の結果。
+        output_dir: 予測・スコア等を保存したディレクトリ。
+        run_id: MLflowのrun ID（記録していなければNone）。
+    """
+
+    cv_result: CVResult
+    output_dir: Path
+    run_id: str | None
+
+
+def resolve_path(path: Path) -> Path:
+    """相対パスをリポジトリルート基準の絶対パスに解決する。"""
+    return path if path.is_absolute() else get_repo_root() / path
+
+
+def load_table(path: Path) -> pl.DataFrame:
+    """CSV（エンコーディング自動判定）またはParquetを読み込む。
+
+    Raises:
+        ValueError: 未対応の拡張子の場合。
+    """
+    resolved = resolve_path(path)
+    if resolved.suffix == ".parquet":
+        return pl.read_parquet(resolved)
+    if resolved.suffix == ".csv":
+        return read_csv_auto(resolved)
+    raise ValueError(f"未対応のファイル形式です: {resolved}")
+
+
+def select_feature_columns(config: ExperimentConfig, columns: list[str]) -> list[str]:
+    """特徴量として使う列を決める。
+
+    `data.feature_cols` 指定時はそれを使う。未指定なら目的変数・ID列・`drop_cols` 以外の全列。
+    """
+    data = config.data
+    if data.feature_cols is not None:
+        return list(data.feature_cols)
+    excluded = {data.target, *data.drop_cols}
+    if data.id_col is not None:
+        excluded.add(data.id_col)
+    return [c for c in columns if c not in excluded]
+
+
+def prepare_dataset(
+    config: ExperimentConfig, train: pl.DataFrame, test: pl.DataFrame | None = None
+) -> Dataset:
+    """読み込み済みのDataFrameから学習用データ一式を作る。
+
+    `data.time_col` が指定されていれば、学習・テストデータを時刻の昇順に並べ替える
+    （時系列CVは行順を時間順とみなすため）。
+
+    Args:
+        config: 実験設定。
+        train: 学習データ。
+        test: テストデータ（任意）。
+
+    Returns:
+        学習用データ一式。
+
+    Raises:
+        KeyError: 設定で指定した列がデータに無い場合。
+    """
+    data = config.data
+    required = [data.target, data.id_col, data.group_col, data.time_col]
+    missing = [c for c in required if c is not None and c not in train.columns]
+    if missing:
+        raise KeyError(f"学習データに列がありません: {missing}")
+    if data.time_col is not None:
+        train = train.sort(data.time_col, maintain_order=True)
+        if test is not None and data.time_col in test.columns:
+            test = test.sort(data.time_col, maintain_order=True)
+
+    features = select_feature_columns(config, train.columns)
+    y, classes = encode_target(train[data.target].to_numpy(), config.task)
+    groups = None if data.group_col is None else train[data.group_col].to_numpy()
+    folds = make_folds(config.cv, train, y, groups, time_column=data.time_col)
+
+    X_test = None
+    ids_test = None
+    if test is not None:
+        X_test = test.select(features)
+        ids_test = None if data.id_col is None else test[data.id_col]
+    return Dataset(
+        X=train.select(features),
+        y=y,
+        classes=classes,
+        folds=folds,
+        ids=None if data.id_col is None else train[data.id_col],
+        X_test=X_test,
+        ids_test=ids_test,
+    )
+
+
+def load_dataset(config: ExperimentConfig) -> Dataset:
+    """設定に従ってファイルを読み込み、学習用データ一式を作る。"""
+    train = load_table(config.data.train_path)
+    test = None if config.data.test_path is None else load_table(config.data.test_path)
+    return prepare_dataset(config, train, test)
+
+
+def make_output_dir(name: str, root: Path | None = None) -> Path:
+    """`outputs/experiments/{実験名}/{実行日時}/` を作って返す。"""
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    out = (root or outputs_dir() / "experiments") / name / stamp
+    out.mkdir(parents=True, exist_ok=False)
+    return out
+
+
+def save_cv_outputs(
+    config: ExperimentConfig, dataset: Dataset, result: CVResult, output_dir: Path
+) -> list[Path]:
+    """設定・スコア・予測をファイルに保存し、保存したパスのリストを返す。"""
+    config_path = ensure_parent_dir(output_dir / "config.yaml")
+    with config_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            config.model_dump(mode="json", by_alias=True) | {"resolved_params": result.params},
+            f,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+
+    # fold別スコア（最終行にOOF全体のスコア）
+    score_rows: list[dict[str, Any]] = [
+        {"fold": str(i), **{m: s[i] for m, s in result.fold_scores.items()}}
+        for i in range(len(dataset.folds))
+    ]
+    score_rows.append({"fold": "oof", **result.oof_scores})
+    scores_path = output_dir / "cv_scores.csv"
+    pl.DataFrame(score_rows).write_csv(scores_path)
+
+    oof = predictions_to_frame(result.oof_pred, dataset.ids, result.fold_ids, dataset.y)
+    paths = [config_path, scores_path, save_predictions(oof, output_dir / OOF_FILENAME)]
+    if result.test_pred is not None:
+        test = predictions_to_frame(result.test_pred, dataset.ids_test)
+        paths.append(save_predictions(test, output_dir / TEST_FILENAME))
+    return paths
+
+
+def run_experiment(
+    config: ExperimentConfig,
+    dataset: Dataset | None = None,
+    tracker: Tracker | None = None,
+    output_root: Path | None = None,
+    params: dict[str, Any] | None = None,
+) -> ExperimentResult:
+    """1実験を実行する。
+
+    Args:
+        config: 実験設定。
+        dataset: 学習用データ（Noneなら設定に従ってファイルから読み込む）。
+        tracker: 実験ログの記録先（Noneなら記録しない）。
+        output_root: 出力のルート（Noneなら `outputs/experiments`）。
+        params: モデルパラメータ（チューニング結果等。Noneなら設定値）。
+
+    Returns:
+        実験結果。
+    """
+    dataset = dataset or load_dataset(config)
+    tracker = tracker or NullTracker()
+    output_dir = make_output_dir(config.name, output_root)
+
+    tags = {"model": config.model.name, "task": str(config.task), "cv": config.cv.method}
+    with tracker.start_run(run_name=config.name, tags=tags):
+        result = run_cv(
+            config,
+            dataset.X,
+            dataset.y,
+            dataset.folds,
+            X_test=dataset.X_test,
+            params=params,
+            n_classes=dataset.n_classes,
+        )
+        tracker.log_params(
+            {
+                "config": config.model_dump(mode="json", by_alias=True),
+                "resolved_params": result.params,
+                "n_train": dataset.X.height,
+                "n_features": dataset.X.width,
+            }
+        )
+        for i in range(len(dataset.folds)):
+            tracker.log_metrics({f"fold_{m}": s[i] for m, s in result.fold_scores.items()}, step=i)
+        tracker.log_metrics({f"cv_mean_{k}": v for k, v in result.mean_scores().items()})
+        tracker.log_metrics({f"cv_std_{k}": v for k, v in result.std_scores().items()})
+        tracker.log_metrics({f"oof_{k}": v for k, v in result.oof_scores.items()})
+        for path in save_cv_outputs(config, dataset, result, output_dir):
+            tracker.log_artifact(path)
+        run_id = tracker.active_run_id()
+
+    return ExperimentResult(cv_result=result, output_dir=output_dir, run_id=run_id)

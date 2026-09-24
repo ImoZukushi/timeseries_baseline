@@ -221,3 +221,8 @@ __marimo__/
 /data/**
 !/data/**/
 !/data/**/.gitkeep
+
+# Experiment tracking / outputs (MLflow, Optuna studies, predictions)
+/mlruns/
+/outputs/experiments/
+/outputs/optuna/
