@@ -34,6 +34,9 @@
 
 ## モデリングの実行手順
 
+一連の流れ（特徴量のPipeline化 → 再帰予測 → Optuna → SHAP → アンサンブル）を
+Pythonから使う例は `scripts/quickstart_delhi_climate.py`（QuickStart）を参照。
+
 ```bash
 # 実験（CV学習・予測・SHAP・MLflow記録）
 uv run python scripts/run_experiment.py --config "configs/experiments/*.yaml"
