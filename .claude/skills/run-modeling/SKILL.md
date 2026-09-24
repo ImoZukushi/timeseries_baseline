@@ -16,9 +16,11 @@ disable-model-invocation: true
 
 `CLAUDE.md`、`.claude/skills/` 配下の関連スキル、`docs/agent/*` に従って以下を実施する。
 
-1. 特徴量エンジニアリングのコードを `src/feature_engineering/` 配下に作成する。
-2. モデリングのコードを `src/` 配下の用途別パッケージ（例: `src/modeling/`）に作成する。
-3. 学習・評価を実行するスクリプトを `scripts/` 配下に作成する。
+1. 特徴量エンジニアリングは `src/feature_engineering/` の既存transformerを使い、不足分を同パッケージに追加する。
+2. モデル学習は `src/modeling/` の基盤（`docs/agent/repository-structure.md` 参照）を使い、
+   実験ごとに `configs/experiments/*.yaml` を作成して `scripts/run_experiment.py` で実行する。
+   新しいモデルが必要な場合は `src/modeling/models/` に `ModelSpec` を追加する。
+3. 複数モデルを比較・統合する場合は `configs/ensembles/*.yaml` を作成して `scripts/run_ensemble.py` で実行する。
 4. ベースラインモデルとシンプルなMLモデルを最低1つずつ比較する。
 5. train/validation分割を使用する。
 6. ターゲットリーケージを確認する。
