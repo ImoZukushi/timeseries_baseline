@@ -93,10 +93,10 @@ Do **not** repeat `fontsize=` on every call — it is redundant when `font_scale
 ## Saving
 
 - Save final figures under `outputs/figures/`.
-- Use the path utilities from `src/analysis_project/paths.py`.
+- Use the path utilities from `src/util/paths.py`.
 
 ```python
-from analysis_project.paths import outputs_dir, ensure_parent_dir
+from util.paths import outputs_dir, ensure_parent_dir
 
 # 出力パスを構成して保存
 output_path = outputs_dir() / "figures" / "survival_by_class.png"

@@ -39,8 +39,8 @@ matplotlib.use("Agg")
 import polars as pl
 import seaborn as sns
 
-from analysis_project.csv_quality import make_dataset_name, run_quality_checks
-from analysis_project.time_series_eda import run_time_series_checks
+from eda.csv_quality import make_dataset_name, run_quality_checks
+from eda.time_series_eda import run_time_series_checks
 from util.csv_io import read_csv_auto
 from util.paths import data_dir, outputs_dir
 

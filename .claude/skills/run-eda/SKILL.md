@@ -16,7 +16,7 @@ disable-model-invocation: true
 `CLAUDE.md`、`.claude/skills/` 配下の関連スキル、`docs/agent/*` に従って以下を実施する。
 
 1. 元データを不変の入力として読み込む。
-2. 再利用可能なEDAコードを `src/analysis_project/` 配下に作成する。
+2. 再利用可能なEDAコードを `src/eda/` 配下に作成する。
 3. EDAを実行するスクリプトを `scripts/` 配下に作成する。
 4. 集計テーブルを `outputs/tables/` に保存する。
 5. 図を `outputs/figures/` に保存する。

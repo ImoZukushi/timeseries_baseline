@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import polars as pl
 import pytest
 
-from analysis_project import csv_quality as cq
+from eda import csv_quality as cq
 from util.csv_io import read_csv_auto
 
 

@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from analysis_project import time_series_eda as tse
+from eda import time_series_eda as tse
 
 
 def _dates(n: int, start: str = "2020-01-01") -> pl.Series:

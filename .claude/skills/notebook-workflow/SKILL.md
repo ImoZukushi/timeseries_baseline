@@ -10,7 +10,7 @@ Use this skill when creating, editing, executing, or reviewing Jupyter notebooks
 ## Purpose of Notebooks
 
 - Notebooks are for **exploration and communication**.
-- Reusable logic should be extracted to `src/analysis_project/`.
+- Reusable logic should be extracted to a purpose-specific package under `src/` (`eda/`, `feature_engineering/`, `util/`, etc.).
 
 ## Rules
 

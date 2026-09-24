@@ -16,8 +16,8 @@ disable-model-invocation: true
 
 `CLAUDE.md`、`.claude/skills/` 配下の関連スキル、`docs/agent/*` に従って以下を実施する。
 
-1. 特徴量エンジニアリングのコードを `src/analysis_project/` 配下に作成する。
-2. モデリングのコードを `src/analysis_project/` 配下に作成する。
+1. 特徴量エンジニアリングのコードを `src/feature_engineering/` 配下に作成する。
+2. モデリングのコードを `src/` 配下の用途別パッケージ（例: `src/modeling/`）に作成する。
 3. 学習・評価を実行するスクリプトを `scripts/` 配下に作成する。
 4. ベースラインモデルとシンプルなMLモデルを最低1つずつ比較する。
 5. train/validation分割を使用する。
