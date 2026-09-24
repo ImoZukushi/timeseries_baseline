@@ -17,6 +17,7 @@ import yaml
 
 from modeling.config import ExperimentConfig
 from modeling.cv import Fold, make_folds
+from modeling.explain import compute_oof_shap, save_shap_outputs
 from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_predictions
 from modeling.tasks import encode_target
 from modeling.tracking import NullTracker, Tracker
@@ -208,6 +209,7 @@ def run_experiment(
     tune_params: bool | None = None,
     n_trials: int | None = None,
     optuna_dir: Path | None = None,
+    explain: bool | None = None,
 ) -> ExperimentResult:
     """1実験を実行する。
 
@@ -223,6 +225,7 @@ def run_experiment(
         tune_params: チューニングするか（Noneなら `config.tuning.enabled`）。
         n_trials: 試行回数の上書き（Noneなら `config.tuning.n_trials`）。
         optuna_dir: Optuna studyを保存するディレクトリ（Noneなら `outputs/optuna`）。
+        explain: SHAPを計算するか（Noneなら `config.explain.enabled`）。
 
     Returns:
         実験結果。
@@ -271,6 +274,15 @@ def run_experiment(
         tracker.log_metrics({f"oof_{k}": v for k, v in result.oof_scores.items()})
         for path in save_cv_outputs(config, dataset, result, output_dir):
             tracker.log_artifact(path)
+        if config.explain.enabled if explain is None else explain:
+            shap_result = compute_oof_shap(
+                config, dataset.X, dataset.folds, result, n_classes=dataset.n_classes
+            )
+            class_names = None if dataset.classes is None else [str(c) for c in dataset.classes]
+            for path in save_shap_outputs(
+                shap_result, output_dir / "shap", config.name, class_names
+            ):
+                tracker.log_artifact(path, artifact_path="shap")
         run_id = tracker.active_run_id()
 
     return ExperimentResult(

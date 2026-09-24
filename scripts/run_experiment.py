@@ -73,6 +73,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--n-trials", type=int, default=None, help="チューニングの試行回数")
     parser.add_argument(
+        "--no-explain", action="store_true", help="SHAPを計算しない（設定の explain.enabled も可）"
+    )
+    parser.add_argument(
         "--optuna-dir",
         type=Path,
         default=None,
@@ -98,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
             tune_params=True if args.tune else None,
             n_trials=args.n_trials,
             optuna_dir=args.optuna_dir,
+            explain=False if args.no_explain else None,
         )
         if result.tuning_result is not None:
             tr = result.tuning_result
