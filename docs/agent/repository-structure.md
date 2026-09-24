@@ -47,5 +47,28 @@ uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
 uv sync --extra nn
 ```
 
+### 時系列の再帰的多段予測
+
+`task: time_series` の設定に `forecast` を書くと、目的変数のラグ等を特徴量にした1期先モデルを学習し、
+検証・テスト期間は **予測値を次の時点のラグとして使いながら1ステップずつ予測** する。
+
+```yaml
+task: time_series
+data: {train_path: ..., test_path: ..., target: y, time_col: date, drop_cols: [date]}
+cv: {method: time_cutoff, cutoffs: ["2024-03-01", "2024-04-01"]}
+forecast:
+  series_col: series_id     # 複数系列の場合
+  lags: [1, 2, 7]
+  rolling_windows: [7]      # y_{t-1} から過去7期の平均
+  horizon: 28               # バックテストで評価する最大ステップ（省略時は検証期間全体）
+  clip: {min: 0}            # 再帰中の予測値の範囲制限（任意）
+```
+
+- OOF・チューニング・アンサンブルは、検証期間の実測値を使わない再帰予測のスコアで評価する。
+  参考として、真のラグを使う1期先予測のスコア（`onestep_oof_*`）もMLflowに記録する。
+- ステップ別の誤差は `horizon_scores.csv` / `horizon_error.png` に出力される。
+- 前提: 各系列は一定間隔（1行=1ステップ）であり、`test_path` の外生変数は予測時点で既知であること。
+  複数系列が混在するデータでは `cv.method: time_cutoff` を推奨。
+
 新しいモデルは `src/modeling/models/` に `ModelSpec` を継承したクラスを追加し
 `@register_model` を付けると、YAMLの `model.name` で指定できるようになる。

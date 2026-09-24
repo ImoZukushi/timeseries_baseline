@@ -188,6 +188,60 @@ class TrackingConfig(_StrictModel):
     tracking_uri: str | None = None
 
 
+class ClipConfig(_StrictModel):
+    """予測値の範囲制限。
+
+    Attributes:
+        min: 下限（Noneなら制限なし）。
+        max: 上限（Noneなら制限なし）。
+    """
+
+    min: float | None = None
+    max: float | None = None
+
+    @model_validator(mode="after")
+    def _check_range(self) -> ClipConfig:
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("clip の min は max 以下にしてください")
+        return self
+
+
+class ForecastConfig(_StrictModel):
+    """再帰的多段予測の設定（`task: time_series` のみ）。
+
+    目的変数から作る特徴量（ラグ・移動平均・変化率）を定義する。予測時は、予測値を
+    次の時点の目的変数として履歴に追加し、これらの特徴量を再計算しながら1ステップずつ進む。
+
+    Attributes:
+        series_col: 系列IDの列（複数系列のパネルデータの場合。単一系列なら省略）。
+        lags: 目的変数のラグ（1以上）。`{target}_lag_{k}` 列になる。
+        rolling_windows: `{target}_lag_1` の後方移動平均の窓幅
+            （t-1 から過去w期の平均。現在値 y_t を含まないためリークしない）。
+        rate_of_change: `{target}_lag_1` の前期比（(y_{t-1} - y_{t-2}) / y_{t-2}）を加えるか。
+        horizon: バックテストで評価する最大ステップ数（Noneなら検証期間全体）。
+        clip: 再帰中の予測値の範囲制限（誤差の暴走を防ぐ。例: 非負の目的変数なら min=0）。
+    """
+
+    series_col: str | None = None
+    lags: list[int] = Field(min_length=1)
+    rolling_windows: list[int] = Field(default_factory=list)
+    rate_of_change: bool = False
+    horizon: int | None = Field(default=None, ge=1)
+    clip: ClipConfig = Field(default_factory=ClipConfig)
+
+    @model_validator(mode="after")
+    def _check_values(self) -> ForecastConfig:
+        if any(lag < 1 for lag in self.lags):
+            raise ValueError(
+                "forecast.lags は1以上で指定してください（0以下は未来の値の参照になる）"
+            )
+        if any(w < 1 for w in self.rolling_windows):
+            raise ValueError("forecast.rolling_windows は1以上で指定してください")
+        if (self.rolling_windows or self.rate_of_change) and 1 not in self.lags:
+            raise ValueError("rolling_windows / rate_of_change には lags に 1 を含めてください")
+        return self
+
+
 class ExperimentConfig(_StrictModel):
     """1実験の設定全体。
 
@@ -205,6 +259,7 @@ class ExperimentConfig(_StrictModel):
         tuning: チューニング設定。
         explain: SHAP設定。
         tracking: 実験ログ設定。
+        forecast: 再帰的多段予測の設定（指定時は検証・テスト期間を再帰予測する）。
     """
 
     name: str
@@ -219,10 +274,16 @@ class ExperimentConfig(_StrictModel):
     tuning: TuningConfig = Field(default_factory=TuningConfig)
     explain: ExplainConfig = Field(default_factory=ExplainConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+    forecast: ForecastConfig | None = None
 
     @model_validator(mode="after")
     def _check_consistency(self) -> ExperimentConfig:
         _validate_metrics(self.metrics, self.task)
+        if self.forecast is not None:
+            if self.task is not Task.TIME_SERIES:
+                raise ValueError("forecast は task: time_series でのみ指定できます")
+            if self.data.time_col is None:
+                raise ValueError("forecast には data.time_col の指定が必要です")
         # 時系列タスクで時間順序を無視したCVを使うと未来の情報で学習してしまう
         if self.task is Task.TIME_SERIES and self.cv.method not in TIME_AWARE_CV_METHODS:
             raise ValueError(

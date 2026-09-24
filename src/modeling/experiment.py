@@ -11,48 +11,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+import matplotlib.pyplot as plt
 import polars as pl
 import yaml
 
 from modeling.config import ExperimentConfig
-from modeling.cv import Fold, make_folds
+from modeling.cv import make_folds
+from modeling.dataset import Dataset, cross_validate
 from modeling.explain import compute_oof_shap, save_shap_outputs
+from modeling.forecasting import ForecastCVResult, make_builder
 from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_predictions
 from modeling.tasks import encode_target
 from modeling.tracking import NullTracker, Tracker
-from modeling.trainer import CVResult, run_cv
+from modeling.trainer import CVResult
 from modeling.tuning import TuningResult, tune
 from util.csv_io import read_csv_auto
 from util.paths import ensure_parent_dir, get_repo_root, outputs_dir
+from util.plotting import add_caption, ensure_japanese_font
 
-
-@dataclass
-class Dataset:
-    """学習・予測に使うデータ一式。
-
-    Attributes:
-        X: 学習データの特徴量。
-        y: エンコード済みの目的変数。
-        classes: 分類タスクの元のクラスラベル（回帰ではNone）。
-        folds: CV分割。
-        ids: 学習データの行ID（`data.id_col` 指定時）。
-        X_test: テストデータの特徴量。
-        ids_test: テストデータの行ID。
-    """
-
-    X: pl.DataFrame
-    y: np.ndarray
-    classes: np.ndarray | None
-    folds: list[Fold]
-    ids: pl.Series | None = None
-    X_test: pl.DataFrame | None = None
-    ids_test: pl.Series | None = None
-
-    @property
-    def n_classes(self) -> int | None:
-        """分類タスクのクラス数。"""
-        return None if self.classes is None else len(self.classes)
+__all__ = [
+    "Dataset",
+    "ExperimentResult",
+    "load_dataset",
+    "prepare_dataset",
+    "run_experiment",
+]
 
 
 @dataclass
@@ -138,19 +121,33 @@ def prepare_dataset(
     y, classes = encode_target(train[data.target].to_numpy(), config.task)
     groups = None if data.group_col is None else train[data.group_col].to_numpy()
     folds = make_folds(config.cv, train, y, groups, time_column=data.time_col)
+    ids_test = None if test is None or data.id_col is None else test[data.id_col]
 
-    X_test = None
-    ids_test = None
-    if test is not None:
-        X_test = test.select(features)
-        ids_test = None if data.id_col is None else test[data.id_col]
+    if config.forecast is not None:
+        # 学習データには真の過去値から目的変数の特徴量を付ける（1期先モデルの学習用）。
+        # テストデータの特徴量は予測値を使って再帰的に作るため、ここでは作らない。
+        builder = make_builder(config)
+        if config.forecast.series_col is not None and config.forecast.series_col not in train:
+            raise KeyError(f"学習データに列がありません: {config.forecast.series_col}")
+        frame = builder.build(train)
+        return Dataset(
+            X=frame.select([*features, *builder.feature_names]),
+            y=y,
+            classes=classes,
+            folds=folds,
+            ids=None if data.id_col is None else train[data.id_col],
+            ids_test=ids_test,
+            frame=train,
+            test_frame=test,
+        )
+
     return Dataset(
         X=train.select(features),
         y=y,
         classes=classes,
         folds=folds,
         ids=None if data.id_col is None else train[data.id_col],
-        X_test=X_test,
+        X_test=None if test is None else test.select(features),
         ids_test=ids_test,
     )
 
@@ -198,6 +195,36 @@ def save_cv_outputs(
         test = predictions_to_frame(result.test_pred, dataset.ids_test)
         paths.append(save_predictions(test, output_dir / TEST_FILENAME))
     return paths
+
+
+def save_horizon_outputs(
+    config: ExperimentConfig, result: ForecastCVResult, output_dir: Path
+) -> list[Path]:
+    """再帰予測のステップ別スコア（表と折れ線グラフ）を保存する。"""
+    table_path = output_dir / "horizon_scores.csv"
+    result.horizon_scores.write_csv(table_path)
+    metric = config.primary_metric
+    scores = result.horizon_scores.drop_nulls(metric)
+
+    ensure_japanese_font()
+    fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
+    ax.plot(scores["step"].to_list(), scores[metric].to_list(), marker="o", label="再帰予測")
+    onestep = result.onestep_oof_scores.get(metric)
+    if onestep is not None:
+        ax.axhline(onestep, color="gray", linestyle="--", label="1期先予測（真のラグ使用）")
+    ax.set_xlabel("予測ステップ（検証期間の何期先か）")
+    ax.set_ylabel(metric)
+    ax.set_title(f"{config.name}: 予測ステップ別の {metric}")
+    ax.legend()
+    add_caption(
+        fig,
+        f"全foldの検証期間をステップ別に集計（各ステップの件数 n は horizon_scores.csv 参照）。"
+        f" 再帰OOF {metric}={result.oof_scores[metric]:.6g}",
+    )
+    figure_path = output_dir / "horizon_error.png"
+    fig.savefig(figure_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return [table_path, figure_path]
 
 
 def run_experiment(
@@ -250,15 +277,7 @@ def run_experiment(
             trials_path = output_dir / "tuning_trials.csv"
             tuning_result.trials.write_csv(trials_path)
             tracker.log_artifact(trials_path)
-        result = run_cv(
-            config,
-            dataset.X,
-            dataset.y,
-            dataset.folds,
-            X_test=dataset.X_test,
-            params=params,
-            n_classes=dataset.n_classes,
-        )
+        result = cross_validate(config, dataset, params=params)
         tracker.log_params(
             {
                 "config": config.model_dump(mode="json", by_alias=True),
@@ -274,6 +293,13 @@ def run_experiment(
         tracker.log_metrics({f"oof_{k}": v for k, v in result.oof_scores.items()})
         for path in save_cv_outputs(config, dataset, result, output_dir):
             tracker.log_artifact(path)
+        if isinstance(result, ForecastCVResult):
+            # 参考: 真のラグを使う1期先予測のスコア（再帰予測との差が誤差の蓄積分）
+            tracker.log_metrics(
+                {f"onestep_oof_{k}": v for k, v in result.onestep_oof_scores.items()}
+            )
+            for path in save_horizon_outputs(config, result, output_dir):
+                tracker.log_artifact(path)
         if config.explain.enabled if explain is None else explain:
             shap_result = compute_oof_shap(
                 config, dataset.X, dataset.folds, result, n_classes=dataset.n_classes

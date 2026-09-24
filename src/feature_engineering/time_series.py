@@ -7,7 +7,9 @@
 `MovingAverageTransformer` は常に後方参照のみで中心化オプションを持たない）。
 
 入力データは呼び出し側で対象の時系列順にソート済みであることを前提とする
-（本モジュールはソートを行わない）。
+（本モジュールはソートを行わない）。複数の系列が混在するデータ（パネルデータ）では
+`group_by` に系列IDの列を指定すると系列ごとに計算する（各系列内で時刻順であればよく、
+系列同士が交互に並んでいても構わない）。
 """
 
 from __future__ import annotations
@@ -21,6 +23,13 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from feature_engineering._polars_sklearn import as_variable_list
 
 
+def _per_group(expr: pl.Expr, group_by: str | Sequence[str] | None) -> pl.Expr:
+    """`group_by` 指定時は系列ごとに計算する（別系列の値がラグ等に混ざらないようにする）。"""
+    if group_by is None:
+        return expr
+    return expr.over(as_variable_list(group_by))
+
+
 class LagFeatureGenerator(BaseEstimator, TransformerMixin):
     """ラグ特徴量（過去の値をずらして新しい列にする）。
 
@@ -28,14 +37,25 @@ class LagFeatureGenerator(BaseEstimator, TransformerMixin):
     未来のデータを参照することになるためfit時にValueErrorになる。
     生成される列名は `{列名}_lag_{n}`。
 
+    Args:
+        variables: 対象カラム名。
+        lags: ラグ数のリスト（1以上）。
+        group_by: 系列IDの列（指定時は系列ごとにずらす）。
+
     Attributes:
         variables_: fitで確定した対象カラム名のリスト。
         lags_: fitで確定したラグ数のリスト。
     """
 
-    def __init__(self, variables: str | Sequence[str], lags: Sequence[int]) -> None:
+    def __init__(
+        self,
+        variables: str | Sequence[str],
+        lags: Sequence[int],
+        group_by: str | Sequence[str] | None = None,
+    ) -> None:
         self.variables = variables
         self.lags = lags
+        self.group_by = group_by
 
     def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
         """対象カラム・ラグ数を確定する（学習は不要だが妥当性を検証する）。"""
@@ -53,7 +73,7 @@ class LagFeatureGenerator(BaseEstimator, TransformerMixin):
     def transform(self, X: pl.DataFrame) -> pl.DataFrame:
         """各ラグの値を列として追加する（先頭 `lag` 件はnullになる）。"""
         exprs = [
-            pl.col(col).shift(lag).alias(f"{col}_lag_{lag}")
+            _per_group(pl.col(col).shift(lag), self.group_by).alias(f"{col}_lag_{lag}")
             for col in self.variables_
             for lag in self.lags_
         ]
@@ -65,16 +85,27 @@ class MovingAverageTransformer(BaseEstimator, TransformerMixin):
 
     生成される列名は `{列名}_ma_{window}`。
 
+    Args:
+        variables: 対象カラム名。
+        window: 窓幅（自分を含む過去 `window` 行の平均）。
+        min_periods: 平均の計算に必要な最小行数（Noneなら `window`）。
+        group_by: 系列IDの列（指定時は系列ごとに計算する）。
+
     Attributes:
         variables_: fitで確定した対象カラム名のリスト。
     """
 
     def __init__(
-        self, variables: str | Sequence[str], window: int, min_periods: int | None = None
+        self,
+        variables: str | Sequence[str],
+        window: int,
+        min_periods: int | None = None,
+        group_by: str | Sequence[str] | None = None,
     ) -> None:
         self.variables = variables
         self.window = window
         self.min_periods = min_periods
+        self.group_by = group_by
 
     def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
@@ -84,9 +115,9 @@ class MovingAverageTransformer(BaseEstimator, TransformerMixin):
     def transform(self, X: pl.DataFrame) -> pl.DataFrame:
         """移動平均を列として追加する。"""
         exprs = [
-            pl.col(col)
-            .rolling_mean(self.window, min_samples=self.min_periods)
-            .alias(f"{col}_ma_{self.window}")
+            _per_group(
+                pl.col(col).rolling_mean(self.window, min_samples=self.min_periods), self.group_by
+            ).alias(f"{col}_ma_{self.window}")
             for col in self.variables_
         ]
         return X.with_columns(exprs)
@@ -99,13 +130,24 @@ class RateOfChangeTransformer(BaseEstimator, TransformerMixin):
     `periods=1` の場合のみ対応する（累積積による絶対値の復元は、2点以上先の
     変化率では単一の `initial_value` から一意に復元できないため）。
 
+    Args:
+        variables: 対象カラム名。
+        periods: 何行前との比を取るか。
+        group_by: 系列IDの列（指定時は系列ごとに計算する）。
+
     Attributes:
         variables_: fitで確定した対象カラム名のリスト。
     """
 
-    def __init__(self, variables: str | Sequence[str], periods: int = 1) -> None:
+    def __init__(
+        self,
+        variables: str | Sequence[str],
+        periods: int = 1,
+        group_by: str | Sequence[str] | None = None,
+    ) -> None:
         self.variables = variables
         self.periods = periods
+        self.group_by = group_by
 
     def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
@@ -116,7 +158,7 @@ class RateOfChangeTransformer(BaseEstimator, TransformerMixin):
         """変化率を列として追加する。"""
         exprs = []
         for col in self.variables_:
-            previous = pl.col(col).shift(self.periods)
+            previous = _per_group(pl.col(col).shift(self.periods), self.group_by)
             rate = pl.when(previous == 0).then(None).otherwise((pl.col(col) - previous) / previous)
             exprs.append(rate.alias(f"{col}_roc_{self.periods}"))
         return X.with_columns(exprs)

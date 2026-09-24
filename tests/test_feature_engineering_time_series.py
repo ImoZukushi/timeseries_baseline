@@ -135,3 +135,36 @@ def test_rate_of_change_leak_invariance() -> None:
     alone = roc.transform(test)["x_roc_1"].to_list()
     combined = roc.transform(pl.concat([train, test]))["x_roc_1"].to_list()[-2:]
     assert alone[1:] == pytest.approx(combined[1:])
+
+
+# --- group_by（複数系列） ------------------------------------------------------------
+
+
+def _panel() -> pl.DataFrame:
+    # 系列A・Bが交互に並んだパネルデータ（各系列内は時刻順）
+    return pl.DataFrame(
+        {
+            "s": ["A", "B", "A", "B", "A", "B"],
+            "x": [1.0, 100.0, 2.0, 200.0, 4.0, 400.0],
+        }
+    )
+
+
+def test_lag_group_by_does_not_mix_series() -> None:
+    out = LagFeatureGenerator("x", lags=[1], group_by="s").fit_transform(_panel())
+    assert out["x_lag_1"].to_list() == [None, None, 1.0, 100.0, 2.0, 200.0]
+
+
+def test_lag_without_group_by_keeps_previous_behavior() -> None:
+    out = LagFeatureGenerator("x", lags=[1]).fit_transform(_panel())
+    assert out["x_lag_1"].to_list() == [None, 1.0, 100.0, 2.0, 200.0, 4.0]
+
+
+def test_moving_average_group_by() -> None:
+    out = MovingAverageTransformer("x", window=2, group_by="s").fit_transform(_panel())
+    assert out["x_ma_2"].to_list() == pytest.approx([None, None, 1.5, 150.0, 3.0, 300.0])
+
+
+def test_rate_of_change_group_by() -> None:
+    out = RateOfChangeTransformer("x", periods=1, group_by="s").fit_transform(_panel())
+    assert out["x_roc_1"].to_list() == pytest.approx([None, None, 1.0, 1.0, 1.0, 1.0])

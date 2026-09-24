@@ -1,8 +1,9 @@
 """Optunaによるハイパーパラメータチューニング。
 
-目的関数は「`run_cv` で得た主指標のfold平均」。CV分割は `Dataset.folds` を全試行で
-使い回すため、試行間のスコア差は純粋にパラメータの差になる。fold毎のスコアを
-`trial.report` に渡し、見込みの薄い試行はMedianPrunerで途中打ち切りする。
+目的関数は「CV学習（`modeling.dataset.cross_validate`）で得た主指標のfold平均」。
+`forecast` 指定時は再帰バックテストのスコア（長期予測の精度）になる。
+CV分割は `Dataset.folds` を全試行で使い回すため、試行間のスコア差は純粋にパラメータの差になる。
+fold毎のスコアを `trial.report` に渡し、見込みの薄い試行はMedianPrunerで途中打ち切りする。
 studyはSQLiteに保存するため、同じ実験名で再実行すると続きから探索できる。
 """
 
@@ -11,20 +12,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import optuna
 import polars as pl
 
 from modeling.config import ExperimentConfig
+from modeling.dataset import Dataset, cross_validate
 from modeling.metrics import get_metric
 from modeling.models import get_model_spec
 from modeling.tracking import NullTracker, Tracker
-from modeling.trainer import run_cv
-
-if TYPE_CHECKING:  # 型チェック時のみ参照（experimentとの循環importを避ける）
-    from modeling.experiment import Dataset
 
 # 試行ごとのINFOログを抑制する（結果は TuningResult.trials とMLflowで確認する）
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -149,14 +147,8 @@ def tune(
             if trial.should_prune():
                 raise optuna.TrialPruned()
 
-        result = run_cv(
-            config,
-            dataset.X,
-            dataset.y,
-            dataset.folds,
-            params=params,
-            n_classes=dataset.n_classes,
-            fold_callback=report,
+        result = cross_validate(
+            config, dataset, params=params, fold_callback=report, predict_test=False
         )
         value = result.mean_scores()[config.primary_metric]
         iters = [b for b in result.best_iterations if b is not None]
