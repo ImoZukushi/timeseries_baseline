@@ -1,0 +1,9 @@
+# 動作確認用のサンプル設定。configs/experiments/ の2実験を実行した後に使う。
+# 構成要素は同じ学習データ・同じCV分割（cv設定とseed）で作られている必要がある。
+name: example_blend
+task: regression
+members:
+  - {name: lgbm, experiment: example_lgbm}   # outputs/experiments/example_lgbm/ の最新結果
+  - {name: dummy, experiment: example_dummy}
+method: weighted
+metrics: [rmse, mae]

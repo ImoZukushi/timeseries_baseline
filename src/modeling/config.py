@@ -21,6 +21,24 @@ TIME_AWARE_CV_METHODS = frozenset({"time_series", "sliding_window", "time_cutoff
 _CLASSIFICATION_ONLY_METRICS = frozenset({"auc", "logloss", "accuracy", "f1", "f1_macro"})
 
 
+def _validate_metrics(metrics: list[str], task: Task) -> None:
+    """指標名の存在とタスクとの整合性を確認する。
+
+    Raises:
+        ValueError: 未登録の指標、またはタスクに合わない指標がある場合。
+    """
+    for name in metrics:
+        try:
+            get_metric(name)
+        except KeyError as e:
+            # pydanticの検証エラーとして報告されるようValueErrorに変換する
+            raise ValueError(str(e)) from e
+        if name in _CLASSIFICATION_ONLY_METRICS and not is_classification(task):
+            raise ValueError(f"指標 {name} は分類タスク専用です")
+        if name not in _CLASSIFICATION_ONLY_METRICS and is_classification(task):
+            raise ValueError(f"指標 {name} は回帰タスク専用です")
+
+
 class _StrictModel(BaseModel):
     """未知のキーを禁止する基底クラス（YAMLのtypoを検出するため）。"""
 
@@ -207,17 +225,7 @@ class ExperimentConfig(_StrictModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> ExperimentConfig:
-        # 指標名の存在確認とタスクとの整合性
-        for name in self.metrics:
-            try:
-                get_metric(name)
-            except KeyError as e:
-                # pydanticの検証エラーとして報告されるようValueErrorに変換する
-                raise ValueError(str(e)) from e
-            if name in _CLASSIFICATION_ONLY_METRICS and not is_classification(self.task):
-                raise ValueError(f"指標 {name} は分類タスク専用です")
-            if name not in _CLASSIFICATION_ONLY_METRICS and is_classification(self.task):
-                raise ValueError(f"指標 {name} は回帰タスク専用です")
+        _validate_metrics(self.metrics, self.task)
         # 時系列タスクで時間順序を無視したCVを使うと未来の情報で学習してしまう
         if self.task is Task.TIME_SERIES and self.cv.method not in TIME_AWARE_CV_METHODS:
             raise ValueError(
@@ -255,3 +263,93 @@ def load_experiment_config(path: Path) -> ExperimentConfig:
     with path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return ExperimentConfig.model_validate(raw)
+
+
+class EnsembleMemberConfig(_StrictModel):
+    """アンサンブルの構成要素（1実験分の予測）の指定。
+
+    `experiment` / `path` / `run_id` のいずれか1つを指定する。
+
+    Attributes:
+        name: 構成要素の表示名（重み・スコア表の列名に使う）。
+        experiment: 実験名。`outputs/experiments/{実験名}/` 配下の最新の実行結果を使う。
+        path: 予測ファイル（`oof_predictions.parquet` 等）を含むディレクトリ。
+        run_id: MLflowのrun ID（artifactから予測ファイルを取得する）。
+    """
+
+    name: str
+    experiment: str | None = None
+    path: Path | None = None
+    run_id: str | None = None
+
+    @model_validator(mode="after")
+    def _check_single_source(self) -> EnsembleMemberConfig:
+        n_sources = sum(v is not None for v in (self.experiment, self.path, self.run_id))
+        if n_sources != 1:
+            raise ValueError(
+                f"{self.name}: experiment / path / run_id のいずれか1つを指定してください"
+            )
+        return self
+
+
+class StackingConfig(_StrictModel):
+    """スタッキングのメタモデル設定。
+
+    Attributes:
+        model: メタモデル（`modeling.models` の登録名とパラメータ）。既定は線形モデル。
+    """
+
+    model: ModelConfig = Field(default_factory=lambda: ModelConfig(name="linear"))
+
+
+class EnsembleConfig(_StrictModel):
+    """アンサンブルの設定。
+
+    Attributes:
+        name: アンサンブル名（出力ディレクトリ名・MLflowのrun名）。
+        task: 予測タスク（構成要素の実験と同じであること）。
+        members: 構成要素（2つ以上）。
+        method: 統合方法。
+            `mean`（単純平均）/ `rank_mean`（順位平均、二値分類のみ）/
+            `weighted`（OOFで重みを最適化）/ `stacking`（メタモデル）。
+        metrics: 評価指標。先頭が重み最適化の目的関数になる。
+        stacking: `method: stacking` のときのメタモデル設定。
+        seed: 乱数シード。
+        tracking: 実験ログ設定。
+    """
+
+    name: str
+    task: Task
+    members: list[EnsembleMemberConfig] = Field(min_length=2)
+    method: Literal["mean", "rank_mean", "weighted", "stacking"] = "weighted"
+    metrics: list[str] = Field(min_length=1)
+    stacking: StackingConfig = Field(default_factory=StackingConfig)
+    seed: int = 42
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> EnsembleConfig:
+        _validate_metrics(self.metrics, self.task)
+        if self.method == "rank_mean" and self.task is not Task.BINARY:
+            # 順位は確率・予測値の尺度を持たないため、順位だけで評価できるAUC向けに限定する
+            raise ValueError("rank_mean は二値分類専用です")
+        names = [m.name for m in self.members]
+        if len(set(names)) != len(names):
+            raise ValueError(f"members の name が重複しています: {names}")
+        return self
+
+    @property
+    def primary_metric(self) -> str:
+        """主指標（`metrics` の先頭）。"""
+        return self.metrics[0]
+
+
+def load_ensemble_config(path: Path) -> EnsembleConfig:
+    """YAMLファイルからアンサンブル設定を読み込んで検証する。
+
+    Raises:
+        pydantic.ValidationError: 設定内容が不正な場合。
+    """
+    with path.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    return EnsembleConfig.model_validate(raw)
