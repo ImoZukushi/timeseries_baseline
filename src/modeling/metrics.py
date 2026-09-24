@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from sklearn import metrics as skm
@@ -32,7 +33,7 @@ class Metric:
         return float(self.func(y_true, y_pred))
 
     @property
-    def direction(self) -> str:
+    def direction(self) -> Literal["maximize", "minimize"]:
         """Optunaの `direction` 引数に渡す文字列（"maximize" / "minimize"）。"""
         return "maximize" if self.greater_is_better else "minimize"
 

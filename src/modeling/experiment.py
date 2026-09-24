@@ -21,6 +21,7 @@ from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_
 from modeling.tasks import encode_target
 from modeling.tracking import NullTracker, Tracker
 from modeling.trainer import CVResult, run_cv
+from modeling.tuning import TuningResult, tune
 from util.csv_io import read_csv_auto
 from util.paths import ensure_parent_dir, get_repo_root, outputs_dir
 
@@ -61,11 +62,13 @@ class ExperimentResult:
         cv_result: CV学習の結果。
         output_dir: 予測・スコア等を保存したディレクトリ。
         run_id: MLflowのrun ID（記録していなければNone）。
+        tuning_result: チューニング結果（チューニングしていなければNone）。
     """
 
     cv_result: CVResult
     output_dir: Path
     run_id: str | None
+    tuning_result: TuningResult | None = None
 
 
 def resolve_path(path: Path) -> Path:
@@ -202,15 +205,24 @@ def run_experiment(
     tracker: Tracker | None = None,
     output_root: Path | None = None,
     params: dict[str, Any] | None = None,
+    tune_params: bool | None = None,
+    n_trials: int | None = None,
+    optuna_dir: Path | None = None,
 ) -> ExperimentResult:
     """1実験を実行する。
+
+    チューニングする場合は、同じrunの中で「探索（各試行は子run）→ 最良パラメータでCV学習」
+    の順に実行し、最良パラメータでの結果を本runのスコア・予測として記録する。
 
     Args:
         config: 実験設定。
         dataset: 学習用データ（Noneなら設定に従ってファイルから読み込む）。
         tracker: 実験ログの記録先（Noneなら記録しない）。
         output_root: 出力のルート（Noneなら `outputs/experiments`）。
-        params: モデルパラメータ（チューニング結果等。Noneなら設定値）。
+        params: モデルパラメータ（Noneなら設定値。チューニング時は無視される）。
+        tune_params: チューニングするか（Noneなら `config.tuning.enabled`）。
+        n_trials: 試行回数の上書き（Noneなら `config.tuning.n_trials`）。
+        optuna_dir: Optuna studyを保存するディレクトリ（Noneなら `outputs/optuna`）。
 
     Returns:
         実験結果。
@@ -218,9 +230,23 @@ def run_experiment(
     dataset = dataset or load_dataset(config)
     tracker = tracker or NullTracker()
     output_dir = make_output_dir(config.name, output_root)
+    do_tune = config.tuning.enabled if tune_params is None else tune_params
 
     tags = {"model": config.model.name, "task": str(config.task), "cv": config.cv.method}
+    if do_tune:
+        tags["tuned"] = "true"
+    tuning_result: TuningResult | None = None
     with tracker.start_run(run_name=config.name, tags=tags):
+        if do_tune:
+            storage = (optuna_dir or outputs_dir() / "optuna") / f"{config.name}.db"
+            tuning_result = tune(
+                config, dataset, n_trials=n_trials, storage_path=storage, tracker=tracker
+            )
+            params = tuning_result.best_params
+            tracker.log_metrics({f"tuning_best_{config.primary_metric}": tuning_result.best_value})
+            trials_path = output_dir / "tuning_trials.csv"
+            tuning_result.trials.write_csv(trials_path)
+            tracker.log_artifact(trials_path)
         result = run_cv(
             config,
             dataset.X,
@@ -247,4 +273,6 @@ def run_experiment(
             tracker.log_artifact(path)
         run_id = tracker.active_run_id()
 
-    return ExperimentResult(cv_result=result, output_dir=output_dir, run_id=run_id)
+    return ExperimentResult(
+        cv_result=result, output_dir=output_dir, run_id=run_id, tuning_result=tuning_result
+    )

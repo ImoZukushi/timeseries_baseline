@@ -4,9 +4,13 @@
 `outputs/experiments/{実験名}/{実行日時}/` に保存され、MLflow（`mlruns/`）にも記録される。
 
 Usage:
-    uv run python scripts/run_experiment.py --config configs/experiments/lgbm_baseline.yaml
+    uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml
     uv run python scripts/run_experiment.py --config "configs/experiments/*.yaml"
-    uv run python scripts/run_experiment.py --config configs/experiments/lgbm.yaml --no-tracking
+    uv run python scripts/run_experiment.py --config configs/experiments/*.yaml --no-tracking
+    uv run python scripts/run_experiment.py --config configs/exp.yaml --tune --n-trials 30
+
+`--tune` を付けるとOptunaでハイパーパラメータを探索し、最良パラメータでCV学習し直す。
+studyは `outputs/optuna/{実験名}.db` に保存され、同じコマンドを再実行すると続きから探索する。
 """
 
 from __future__ import annotations
@@ -65,6 +69,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--no-tracking", action="store_true", help="MLflowに記録しない")
     parser.add_argument(
+        "--tune", action="store_true", help="Optunaでチューニングする（設定の tuning.enabled も可）"
+    )
+    parser.add_argument("--n-trials", type=int, default=None, help="チューニングの試行回数")
+    parser.add_argument(
+        "--optuna-dir",
+        type=Path,
+        default=None,
+        help="Optuna studyの保存先ディレクトリ（既定: outputs/optuna）",
+    )
+    parser.add_argument(
         "--output-root",
         type=Path,
         default=None,
@@ -81,7 +95,14 @@ def main(argv: list[str] | None = None) -> None:
             config,
             tracker=make_tracker(config, enabled=not args.no_tracking),
             output_root=args.output_root,
+            tune_params=True if args.tune else None,
+            n_trials=args.n_trials,
+            optuna_dir=args.optuna_dir,
         )
+        if result.tuning_result is not None:
+            tr = result.tuning_result
+            print(f"  チューニング: 完了試行={tr.n_trials} 最良={tr.best_value:.6f}")
+            print(f"  最良パラメータ: {tr.best_params}")
         cv = result.cv_result
         for metric in config.metrics:
             print(
