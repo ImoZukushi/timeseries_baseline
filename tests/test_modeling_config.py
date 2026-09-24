@@ -1,4 +1,4 @@
-"""modeling.config / modeling.metrics / modeling.tasks のテスト。"""
+"""modeling.config / modeling.tasks のテスト（指標は test_modeling_metrics.py）。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 from pydantic import ValidationError
 
 from modeling.config import ExperimentConfig, load_experiment_config
-from modeling.metrics import available_metrics, get_metric
 from modeling.tasks import Task, encode_target, predict
 
 
@@ -100,35 +99,6 @@ metrics: [auc, logloss]
     assert cfg.data.target == "目的変数"
     assert cfg.features[0].class_path == "feature_engineering.numeric.LogTransformer"
     assert cfg.model.params == {"n_estimators": 10}
-
-
-# --- metrics ------------------------------------------------------------------
-
-
-def test_metric_values_and_direction() -> None:
-    y = np.array([1.0, 2.0, 3.0])
-    p = np.array([1.0, 2.0, 5.0])
-    assert get_metric("rmse")(y, p) == pytest.approx(np.sqrt(4 / 3))
-    assert get_metric("mae")(y, p) == pytest.approx(2 / 3)
-    assert get_metric("rmse").direction == "minimize"
-    assert get_metric("auc").direction == "maximize"
-
-
-def test_classification_metrics_handle_binary_and_multiclass() -> None:
-    y_bin = np.array([0, 1, 1, 0])
-    p_bin = np.array([0.1, 0.9, 0.6, 0.4])
-    assert get_metric("auc")(y_bin, p_bin) == pytest.approx(1.0)
-    assert get_metric("accuracy")(y_bin, p_bin) == pytest.approx(1.0)
-    y_multi = np.array([0, 1, 2])
-    p_multi = np.eye(3) * 0.8 + 0.2 / 3
-    assert get_metric("accuracy")(y_multi, p_multi) == pytest.approx(1.0)
-    assert get_metric("logloss")(y_multi, p_multi) > 0
-
-
-def test_get_metric_unknown_raises() -> None:
-    with pytest.raises(KeyError):
-        get_metric("nope")
-    assert "rmse" in available_metrics()
 
 
 # --- tasks --------------------------------------------------------------------

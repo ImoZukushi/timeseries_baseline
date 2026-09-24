@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -126,8 +127,8 @@ class MLflowTracker:
         self._mlflow.log_params({k: str(v)[:6000] for k, v in flat.items()})
 
     def log_metrics(self, metrics: Mapping[str, float], step: int | None = None) -> None:
-        """指標を記録する。"""
-        self._mlflow.log_metrics(dict(metrics), step=step)
+        """指標を記録する（MLflowで使えない文字を含む名前は `sanitize_metric_key` で変換）。"""
+        self._mlflow.log_metrics({sanitize_metric_key(k): v for k, v in metrics.items()}, step=step)
 
     def log_artifact(self, path: Path, artifact_path: str | None = None) -> None:
         """ファイルまたはディレクトリを記録する。"""
@@ -140,6 +141,19 @@ class MLflowTracker:
         """実行中のrun ID。"""
         run = self._mlflow.active_run()
         return None if run is None else str(run.info.run_id)
+
+
+_INVALID_METRIC_KEY_CHARS = re.compile(r"[^0-9A-Za-z_\-. /]")
+
+
+def sanitize_metric_key(key: str) -> str:
+    """MLflowの指標名に使えない文字（英数字・`_-. /` 以外）を `_` に置き換える。
+
+    Examples:
+        >>> sanitize_metric_key("oof_pauc@0.05")
+        'oof_pauc_0.05'
+    """
+    return _INVALID_METRIC_KEY_CHARS.sub("_", key)
 
 
 def flatten_dict(data: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:

@@ -18,8 +18,6 @@ from modeling.tasks import Task, is_classification
 # 時間順序を保つCV（時系列タスクではこれ以外を禁止する）
 TIME_AWARE_CV_METHODS = frozenset({"time_series", "sliding_window", "time_cutoff"})
 
-_CLASSIFICATION_ONLY_METRICS = frozenset({"auc", "logloss", "accuracy", "f1", "f1_macro"})
-
 
 def _validate_metrics(metrics: list[str], task: Task) -> None:
     """指標名の存在とタスクとの整合性を確認する。
@@ -29,14 +27,13 @@ def _validate_metrics(metrics: list[str], task: Task) -> None:
     """
     for name in metrics:
         try:
-            get_metric(name)
+            metric = get_metric(name)
         except KeyError as e:
             # pydanticの検証エラーとして報告されるようValueErrorに変換する
             raise ValueError(str(e)) from e
-        if name in _CLASSIFICATION_ONLY_METRICS and not is_classification(task):
-            raise ValueError(f"指標 {name} は分類タスク専用です")
-        if name not in _CLASSIFICATION_ONLY_METRICS and is_classification(task):
-            raise ValueError(f"指標 {name} は回帰タスク専用です")
+        if task not in metric.tasks:
+            supported = sorted(str(t) for t in metric.tasks)
+            raise ValueError(f"指標 {name} はタスク {task} に対応していません（対応: {supported}）")
 
 
 class _StrictModel(BaseModel):
