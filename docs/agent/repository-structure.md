@@ -81,5 +81,23 @@ forecast:
 - 前提: 各系列は一定間隔（1行=1ステップ）であり、`test_path` の外生変数は予測時点で既知であること。
   複数系列が混在するデータでは `cv.method: time_cutoff` を推奨。
 
+### 誤差評価の可視化
+
+実験を実行すると、OOF予測から誤差評価の図・表が `{出力}/evaluation/` に自動で保存される
+（部品は `src/evaluation/`。sklearn の Display API にならい、Notebook から単独でも使える）。
+
+| タスク | 図 |
+|---|---|
+| 回帰・時系列 | 残差分布・残差プロット・正規Q-Q・Leverage/Cookの距離・残差のACF/PACF（時刻列がある場合）。複数系列（`forecast.series_col`）では残差分布・Q-Q・ACF/PACFを系列ごとに描く（最大 `evaluation.max_series` 系列） |
+| 分類 | 混同行列・ROC曲線・PR曲線（多クラスはOne-vs-Rest） |
+| 共通 | 学習の推移（LightGBM・XGBoost・NN）、学習曲線・検証曲線（設定時のみ） |
+
+```yaml
+evaluation:
+  enabled: true
+  learning_curve: {enabled: true, train_sizes: [0.2, 0.5, 1.0]}   # 学習をやり直すため既定は無効
+  validation_curve: {param: learning_rate, values: [0.01, 0.05, 0.2]}
+```
+
 新しいモデルは `src/modeling/models/` に `ModelSpec` を継承したクラスを追加し
 `@register_model` を付けると、YAMLの `model.name` で指定できるようになる。

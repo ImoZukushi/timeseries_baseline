@@ -15,9 +15,11 @@ import matplotlib.pyplot as plt
 import polars as pl
 import yaml
 
+from evaluation.curves import HorizonErrorDisplay
 from modeling.config import ExperimentConfig
 from modeling.cv import make_folds
 from modeling.dataset import Dataset, cross_validate
+from modeling.evaluation import EVALUATION_DIR, save_evaluation_outputs
 from modeling.explain import compute_oof_shap, save_shap_outputs
 from modeling.forecasting import ForecastCVResult, make_builder, make_target_transform
 from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_predictions
@@ -27,7 +29,7 @@ from modeling.trainer import CVResult
 from modeling.tuning import TuningResult, tune
 from util.csv_io import read_csv_auto
 from util.paths import ensure_parent_dir, get_repo_root, outputs_dir
-from util.plotting import add_caption, ensure_japanese_font
+from util.plotting import add_caption
 
 __all__ = [
     "Dataset",
@@ -211,18 +213,12 @@ def save_horizon_outputs(
     table_path = output_dir / "horizon_scores.csv"
     result.horizon_scores.write_csv(table_path)
     metric = config.primary_metric
-    scores = result.horizon_scores.drop_nulls(metric)
-
-    ensure_japanese_font()
-    fig, ax = plt.subplots(figsize=(10, 5), constrained_layout=True)
-    ax.plot(scores["step"].to_list(), scores[metric].to_list(), marker="o", label="再帰予測")
-    onestep = result.onestep_oof_scores.get(metric)
-    if onestep is not None:
-        ax.axhline(onestep, color="gray", linestyle="--", label="1期先予測（真のラグ使用）")
-    ax.set_xlabel("予測ステップ（検証期間の何期先か）")
-    ax.set_ylabel(metric)
-    ax.set_title(f"{config.name}: 予測ステップ別の {metric}")
-    ax.legend()
+    fig = HorizonErrorDisplay.from_scores(
+        result.horizon_scores,
+        metric,
+        reference=result.onestep_oof_scores.get(metric),
+        title=f"{config.name}: 予測ステップ別の {metric}",
+    ).figure_
     add_caption(
         fig,
         f"全foldの検証期間をステップ別に集計（各ステップの件数 n は horizon_scores.csv 参照）。"
@@ -307,6 +303,10 @@ def run_experiment(
             )
             for path in save_horizon_outputs(config, result, output_dir):
                 tracker.log_artifact(path)
+        if config.evaluation.enabled:
+            # 誤差評価の図・表（残差・影響度・分類の図・学習の推移など）
+            for path in save_evaluation_outputs(config, dataset, result, output_dir):
+                tracker.log_artifact(path, artifact_path=EVALUATION_DIR)
         if config.explain.enabled if explain is None else explain:
             shap_result = compute_oof_shap(
                 config, dataset.X, dataset.folds, result, n_classes=dataset.n_classes

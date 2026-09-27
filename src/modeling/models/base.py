@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal
 
 from sklearn.base import BaseEstimator
 
+from evaluation.curves import TrainingHistory
 from modeling.tasks import Task
 
 ExplainerKind = Literal["tree", "linear", "permutation"]
@@ -69,13 +70,33 @@ class ModelSpec(ABC):
         raise NotImplementedError(f"{self.name} には既定の探索空間がありません")
 
     def fit_kwargs(
-        self, X_valid: Any, y_valid: Any, early_stopping_rounds: int | None
+        self,
+        X_valid: Any,
+        y_valid: Any,
+        early_stopping_rounds: int | None,
+        *,
+        X_train: Any = None,
+        y_train: Any = None,
+        record_history: bool = False,
     ) -> dict[str, Any]:
         """`estimator.fit` に渡す追加引数（early stopping用の検証データ等）を返す。
+
+        Args:
+            X_valid: 検証データ（前処理後。無ければNone）。
+            y_valid: 検証データの目的変数。
+            early_stopping_rounds: early stoppingのラウンド数（Noneなら無効）。
+            X_train: 学習データ（前処理後）。学習の推移を記録する場合に評価セットとして使う。
+            y_train: 学習データの目的変数。
+            record_history: Trueなら学習・検証の損失を反復ごとに記録する
+                （`training_history` で取り出す）。
 
         既定では追加引数なし。
         """
         return {}
+
+    def training_history(self, estimator: Any) -> TrainingHistory | None:
+        """学習済みestimatorから、反復ごとの学習・検証の損失を取り出す（記録が無ければNone）。"""
+        return None
 
     def best_iteration(self, estimator: Any) -> int | None:
         """early stoppingで決まった最良イテレーション数を返す（該当しなければNone）。"""

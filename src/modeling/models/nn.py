@@ -29,6 +29,7 @@ from skorch.callbacks import EarlyStopping
 from skorch.dataset import ValidSplit
 from torch import nn
 
+from evaluation.curves import TrainingHistory
 from modeling.models.base import ModelSpec, merge_params, register_model
 from modeling.tasks import Task, is_classification
 
@@ -248,6 +249,20 @@ class _NeuralNetSpec(ModelSpec):
     def with_n_iterations(self, params: dict[str, Any], n_iterations: int) -> dict[str, Any]:
         """エポック数を固定したパラメータを返す。"""
         return {**params, "max_epochs": n_iterations}
+
+    def training_history(self, estimator: Any) -> TrainingHistory | None:
+        """skorch の `history` から、エポックごとの学習・検証の損失を取り出す。
+
+        検証の損失は、early stopping用に学習foldから切り出した検証データのもの。
+        """
+        net = estimator[-1]
+        if not len(net.history):
+            return None
+        train = [float(v) for v in net.history[:, "train_loss"]]
+        valid = None
+        if net.train_split is not None:
+            valid = [float(v) for v in net.history[:, "valid_loss"]]
+        return TrainingHistory("loss", train, valid, self.best_iteration(estimator))
 
 
 @register_model

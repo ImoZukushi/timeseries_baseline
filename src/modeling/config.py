@@ -261,6 +261,63 @@ class ForecastConfig(_StrictModel):
         return self
 
 
+class LearningCurveConfig(_StrictModel):
+    """学習曲線（学習データの量を変えたときのスコア）の設定。
+
+    Attributes:
+        enabled: 作成するか（学習をやり直すため時間がかかる。既定は無効）。
+        train_sizes: 各foldの学習データのうち使う割合（0〜1）。
+    """
+
+    enabled: bool = False
+    train_sizes: list[float] = Field(default_factory=lambda: [0.2, 0.4, 0.6, 0.8, 1.0])
+
+    @model_validator(mode="after")
+    def _check_sizes(self) -> LearningCurveConfig:
+        if not self.train_sizes or any(not 0 < s <= 1 for s in self.train_sizes):
+            raise ValueError("learning_curve.train_sizes は 0 < 割合 <= 1 で指定してください")
+        return self
+
+
+class ValidationCurveConfig(_StrictModel):
+    """検証曲線（1つのハイパーパラメータを動かしたときのスコア）の設定。
+
+    Attributes:
+        param: 動かすパラメータ名（例: `learning_rate`。`model__` で始まらない名前は
+            モデルのパラメータとみなして自動で `model__` を付ける）。Noneなら作成しない。
+        values: パラメータの値のリスト。
+    """
+
+    param: str | None = None
+    values: list[Any] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check_values(self) -> ValidationCurveConfig:
+        if self.param is not None and len(self.values) < 2:
+            raise ValueError("validation_curve.values には2つ以上の値を指定してください")
+        return self
+
+
+class EvaluationConfig(_StrictModel):
+    """誤差評価の可視化（`modeling.evaluation`）の設定。
+
+    Attributes:
+        enabled: 誤差評価の図・表を作成するか。
+        max_points: 散布図などで描く最大点数（多い場合は無作為に間引く）。
+        training_history: 学習の推移（反復ごとの学習・検証の損失）を記録・描画するか。
+        learning_curve: 学習曲線の設定。
+        validation_curve: 検証曲線の設定。
+        max_series: 残差のACF/PACFを描く最大系列数（複数系列の場合）。
+    """
+
+    enabled: bool = True
+    max_points: int = Field(default=5000, ge=100)
+    training_history: bool = True
+    learning_curve: LearningCurveConfig = Field(default_factory=LearningCurveConfig)
+    validation_curve: ValidationCurveConfig = Field(default_factory=ValidationCurveConfig)
+    max_series: int = Field(default=4, ge=1)
+
+
 class ExperimentConfig(_StrictModel):
     """1実験の設定全体。
 
@@ -279,6 +336,7 @@ class ExperimentConfig(_StrictModel):
         explain: SHAP設定。
         tracking: 実験ログ設定。
         forecast: 再帰的多段予測の設定（指定時は検証・テスト期間を再帰予測する）。
+        evaluation: 誤差評価の可視化の設定。
     """
 
     name: str
@@ -294,6 +352,7 @@ class ExperimentConfig(_StrictModel):
     explain: ExplainConfig = Field(default_factory=ExplainConfig)
     tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     forecast: ForecastConfig | None = None
+    evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
 
     @model_validator(mode="after")
     def _check_consistency(self) -> ExperimentConfig:

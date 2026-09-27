@@ -97,10 +97,14 @@ def fit_pipeline(
     pipeline = build_pipeline(run_config, params)
     preprocess = pipeline[:-1]
     Xt_train = preprocess.fit_transform(X_train, y_train)
+    # 誤差評価で「学習の推移」を描く場合は、学習・検証の損失を反復ごとに記録する
+    record = config.evaluation.enabled and config.evaluation.training_history
     fit_kwargs: dict[str, Any] = {}
-    if rounds is not None and X_valid is not None:
-        Xt_valid = preprocess.transform(X_valid)
-        fit_kwargs = spec.fit_kwargs(Xt_valid, y_valid, rounds)
+    if (rounds is not None and X_valid is not None) or record:
+        Xt_valid = None if X_valid is None else preprocess.transform(X_valid)
+        fit_kwargs = spec.fit_kwargs(
+            Xt_valid, y_valid, rounds, X_train=Xt_train, y_train=y_train, record_history=record
+        )
     pipeline.named_steps[MODEL_STEP].fit(Xt_train, y_train, **fit_kwargs)
     return pipeline
 

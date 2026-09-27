@@ -8,6 +8,7 @@ import lightgbm as lgb
 import xgboost as xgb
 from sklearn.base import BaseEstimator
 
+from evaluation.curves import TrainingHistory
 from modeling.models.base import ModelSpec, merge_params, register_model
 from modeling.tasks import Task, is_classification
 
@@ -49,17 +50,50 @@ class LightGBMSpec(ModelSpec):
         }
 
     def fit_kwargs(
-        self, X_valid: Any, y_valid: Any, early_stopping_rounds: int | None
+        self,
+        X_valid: Any,
+        y_valid: Any,
+        early_stopping_rounds: int | None,
+        *,
+        X_train: Any = None,
+        y_train: Any = None,
+        record_history: bool = False,
     ) -> dict[str, Any]:
-        """early stopping用に検証データとcallbackを渡す。"""
-        if early_stopping_rounds is None:
-            return {}
-        # LightGBM 4.7以降は eval_set ではなく eval_X / eval_y で渡す
-        return {
-            "eval_X": (X_valid,),
-            "eval_y": (y_valid,),
-            "callbacks": [lgb.early_stopping(early_stopping_rounds, verbose=False)],
-        }
+        """early stopping・学習の推移の記録用に、評価セットとcallbackを渡す。
+
+        学習データを評価セットに加える場合は、`fit` に渡すのと同じオブジェクトを渡す
+        （LightGBMは同一オブジェクトを学習データとみなし、early stoppingの判定から除く）。
+        """
+        eval_X: list[Any] = []
+        eval_y: list[Any] = []
+        if record_history and X_train is not None:
+            eval_X.append(X_train)
+            eval_y.append(y_train)
+        if X_valid is not None and (early_stopping_rounds is not None or record_history):
+            eval_X.append(X_valid)
+            eval_y.append(y_valid)
+        kwargs: dict[str, Any] = {}
+        if eval_X:
+            # LightGBM 4.7以降は eval_set ではなく eval_X / eval_y で渡す
+            kwargs.update(eval_X=tuple(eval_X), eval_y=tuple(eval_y))
+        if early_stopping_rounds is not None and X_valid is not None:
+            kwargs["callbacks"] = [lgb.early_stopping(early_stopping_rounds, verbose=False)]
+        return kwargs
+
+    def training_history(self, estimator: Any) -> TrainingHistory | None:
+        """`evals_result_` から学習（`training`）・検証（それ以外）の損失を取り出す。"""
+        results = getattr(estimator, "evals_result_", None) or {}
+        if not results:
+            return None
+        train = results.get("training")
+        valid = next((v for k, v in results.items() if k != "training"), None)
+        metric = next(iter((train or valid or {}).keys()), "loss")
+        return TrainingHistory(
+            metric=metric,
+            train=list(train[metric]) if train else None,
+            valid=list(valid[metric]) if valid else None,
+            best_iteration=self.best_iteration(estimator),
+        )
 
     def best_iteration(self, estimator: Any) -> int | None:
         """early stoppingで決まった最良イテレーション数。"""
@@ -108,12 +142,47 @@ class XGBoostSpec(ModelSpec):
         }
 
     def fit_kwargs(
-        self, X_valid: Any, y_valid: Any, early_stopping_rounds: int | None
+        self,
+        X_valid: Any,
+        y_valid: Any,
+        early_stopping_rounds: int | None,
+        *,
+        X_train: Any = None,
+        y_train: Any = None,
+        record_history: bool = False,
     ) -> dict[str, Any]:
-        """early stopping用に検証データを渡す。"""
-        if early_stopping_rounds is None:
+        """early stopping・学習の推移の記録用に評価セットを渡す。
+
+        XGBoostのearly stoppingは最後の評価セットで判定するため、学習データを先、
+        検証データを最後に並べる。
+        """
+        eval_set: list[tuple[Any, Any]] = []
+        if record_history and X_train is not None:
+            eval_set.append((X_train, y_train))
+        if X_valid is not None and (early_stopping_rounds is not None or record_history):
+            eval_set.append((X_valid, y_valid))
+        if not eval_set:
             return {}
-        return {"eval_set": [(X_valid, y_valid)], "verbose": False}
+        return {"eval_set": eval_set, "verbose": False}
+
+    def training_history(self, estimator: Any) -> TrainingHistory | None:
+        """`evals_result()` から学習・検証の損失を取り出す。
+
+        学習の推移を記録した場合（`record_history=True`）は、評価セットが2つなら
+        学習・検証の順、1つなら学習データのみ（検証データが無い全データ再学習など）。
+        """
+        try:
+            results = estimator.evals_result()
+        except xgb.core.XGBoostError:
+            # 評価セット無しで学習した場合、XGBoostは例外を送出する
+            return None
+        if not results:
+            return None
+        sets = list(results.values())
+        metric = next(iter(sets[0].keys()), "loss")
+        train = list(sets[0][metric])
+        valid = list(sets[1][metric]) if len(sets) > 1 else None
+        return TrainingHistory(metric, train, valid, self.best_iteration(estimator))
 
     def best_iteration(self, estimator: Any) -> int | None:
         """early stoppingで決まった最良イテレーション数（0始まりのため+1する）。"""
