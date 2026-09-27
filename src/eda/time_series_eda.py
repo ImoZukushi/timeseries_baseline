@@ -6,7 +6,11 @@
     - diff: 差分系列（1階差分）
     - log_diff: 対数差分系列（対数系列の1階差分）
     - seasonal_diff: 季節差分系列（デフォルト7点、設定可能）
-    - seasonal_log_diff: 季節対数差分系列（対数系列の季節差分、デフォルト7点、設定可能）
+    - log_seasonal_diff: 季節対数差分系列（対数系列の季節差分、デフォルト7点、設定可能）
+
+    変換は `feature_engineering.numeric.LogTransformer` /
+    `feature_engineering.series_transform.DifferenceTransformer` で行い、
+    モデリングの前処理（`modeling.config.ForecastConfig.target_transform`）と定義をそろえている。
 
 対象グラフ（上記6系列それぞれについて作成）:
     - 生値と移動平均（デフォルト5点、設定可能）
@@ -34,6 +38,8 @@ import polars as pl
 import seaborn as sns
 from statsmodels.tsa.stattools import acf, pacf
 
+from feature_engineering.numeric import LogTransformer
+from feature_engineering.series_transform import DifferenceTransformer
 from util.paths import sanitize_filename_component
 from util.plotting import add_caption, ensure_japanese_font
 
@@ -47,9 +53,12 @@ SERIES_LABELS: dict[str, str] = {
     "diff": "差分系列",
     "log_diff": "対数差分系列",
     "seasonal_diff": "季節差分系列",
-    "seasonal_log_diff": "季節対数差分系列",
+    "log_seasonal_diff": "季節対数差分系列",
 }
 _SERIES_GRID_ORDER = list(SERIES_LABELS)
+
+# transformer に渡すときの一時的な列名
+_VALUE_COL = "value"
 
 
 def find_datetime_column(df: pl.DataFrame) -> str | None:
@@ -110,6 +119,7 @@ def to_log_series(values: pl.Series) -> pl.Series:
     """0以下の値をnullとしたうえで自然対数変換を行う。
 
     対数は正の値でのみ定義されるため、0以下の値は欠損として扱う。
+    変換そのものは `feature_engineering.numeric.LogTransformer` で行う（モデリングと同じ定義）。
 
     Args:
         values: 変換対象の数値Series。
@@ -117,15 +127,25 @@ def to_log_series(values: pl.Series) -> pl.Series:
     Returns:
         対数変換後のSeries（0以下だった要素はnull）。元の列名を維持する。
     """
-    name = values.name
-    frame = values.to_frame("v")
-    return frame.select(
-        pl.when(pl.col("v") > 0).then(pl.col("v")).otherwise(None).log().alias(name)
-    ).to_series()
+    frame = values.cast(pl.Float64).to_frame(_VALUE_COL)
+    return LogTransformer(_VALUE_COL).fit_transform(frame)[_VALUE_COL].alias(values.name)
+
+
+def _difference(values: pl.Series, periods: int) -> pl.Series:
+    """`DifferenceTransformer` で `periods` 期前との差分を取る（元の列名を維持する）。"""
+    frame = values.cast(pl.Float64).to_frame(_VALUE_COL)
+    diffed = DifferenceTransformer(_VALUE_COL, periods=periods).fit_transform(frame)
+    return diffed[_VALUE_COL].alias(values.name)
 
 
 def build_transformed_series(values: pl.Series, seasonal_period: int = 7) -> dict[str, pl.Series]:
     """原系列から6種類の変換系列を作成する。
+
+    6種類 = 原系列 + `feature_engineering.series_transform` の5種類。変換は
+    `feature_engineering` のtransformerで行い、モデリングの前処理と定義をそろえる。
+    ただしEDAでは0以下の値があっても止めずに欠損として図を描きたいため、対数系は
+    「`LogTransformer`（0以下は欠損）→ 差分」の順に作る
+    （`log x` の差分 ＝ 対数差分で、定義は同じ）。
 
     Args:
         values: 原系列の数値Series。
@@ -138,10 +158,10 @@ def build_transformed_series(values: pl.Series, seasonal_period: int = 7) -> dic
     return {
         "raw": values,
         "log": log_values,
-        "diff": values.diff(),
-        "log_diff": log_values.diff(),
-        "seasonal_diff": values.diff(seasonal_period),
-        "seasonal_log_diff": log_values.diff(seasonal_period),
+        "diff": _difference(values, 1),
+        "log_diff": _difference(log_values, 1),
+        "seasonal_diff": _difference(values, seasonal_period),
+        "log_seasonal_diff": _difference(log_values, seasonal_period),
     }
 
 

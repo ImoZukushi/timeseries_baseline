@@ -343,3 +343,16 @@ def test_run_time_series_checks_unresolvable_duplicates_returns_empty(tmp_path: 
     result = tse.run_time_series_checks(df, "sample", tmp_path)
     assert result == []
     assert list(tmp_path.glob("*.png")) == []
+
+
+def test_build_transformed_series_matches_series_transformers() -> None:
+    from feature_engineering.series_transform import SERIES_TRANSFORM_KINDS, make_series_transformer
+
+    # 正の値だけの系列では、EDAの6系列と前処理用transformerの出力が一致する
+    values = pl.Series("v", [3.0, 5.0, 4.0, 8.0, 9.0, 7.0, 12.0, 15.0])
+    result = tse.build_transformed_series(values, seasonal_period=3)
+    frame = values.to_frame()
+    for kind in SERIES_TRANSFORM_KINDS:
+        expected = make_series_transformer(kind, "v", seasonal_period=3).fit_transform(frame)["v"]
+        assert result[kind].to_list() == pytest.approx(expected.to_list(), nan_ok=True), kind
+        assert result[kind].name == "v"
