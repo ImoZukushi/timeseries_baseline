@@ -36,6 +36,8 @@
 
 一連の流れ（特徴量のPipeline化 → 再帰予測 → Optuna → SHAP → アンサンブル）を
 Pythonから使う例は `scripts/quickstart_delhi_climate.py`（QuickStart）を参照。
+同じ内容をセルごとに解説付きで実行できるノートブック版は `notebook/001_quickstart_delhi_climate.ipynb`。
+同じデータのEDA（`src/eda` の使い方の例）は `scripts/eda_delhi_climate.py` / `notebook/002_eda_delhi_climate.ipynb`。
 
 ```bash
 # 実験（CV学習・予測・SHAP・MLflow記録）
@@ -64,8 +66,14 @@ forecast:
   lags: [1, 2, 7]
   rolling_windows: [7]      # y_{t-1} から過去7期の平均
   horizon: 28               # バックテストで評価する最大ステップ（省略時は検証期間全体）
-  clip: {min: 0}            # 再帰中の予測値の範囲制限（任意）
+  clip: {min: 0}            # 予測値の範囲制限（任意）
+  target_transform: seasonal_diff  # 目的変数の変換（任意。log / diff / log_diff / seasonal_diff / log_seasonal_diff）
+  seasonal_period: 365             # 季節差分の周期（seasonal 系の変換で必須）
 ```
+
+- `target_transform` を指定すると、モデルは変換後の系列（例: 前年同日との差）を学習・再帰予測し、
+  予測値を元の尺度に戻してから評価・出力する。GBDTは学習範囲の外へ外挿できないため、
+  トレンドや強い季節性のある系列で有効。変換は `feature_engineering.series_transform` と共通。
 
 - OOF・チューニング・アンサンブルは、検証期間の実測値を使わない再帰予測のスコアで評価する。
   参考として、真のラグを使う1期先予測のスコア（`onestep_oof_*`）もMLflowに記録する。

@@ -78,6 +78,9 @@ def test_experiment_config_is_valid() -> None:
     assert config.forecast is not None
     assert config.forecast.series_col == "variable"
     assert config.forecast.horizon == qs.HORIZON
+    # 365日の季節差分（前年同日との差）を予測する
+    assert config.forecast.target_transform == "seasonal_diff"
+    assert config.forecast.seasonal_period == 365
     assert config.tuning.enabled and config.tuning.n_trials == 3
     assert config.metrics == ["mae"]
 
