@@ -83,6 +83,11 @@ def test_experiment_config_is_valid() -> None:
     assert config.forecast.seasonal_period == 365
     assert config.tuning.enabled and config.tuning.n_trials == 3
     assert config.metrics == ["mae"]
+    # 誤差評価: 3系列すべてを描き、学習曲線・検証曲線も作る
+    assert config.evaluation.enabled
+    assert config.evaluation.max_series == len(qs.TARGET_VARIABLES)
+    assert config.evaluation.learning_curve.enabled
+    assert config.evaluation.validation_curve.param == "learning_rate"
 
 
 def test_evaluate_on_test_per_variable_and_overall() -> None:
@@ -113,6 +118,21 @@ def test_quickstart_end_to_end(tmp_path: Path) -> None:
         for name in ("horizon_scores.csv", "tuning_trials.csv", "test_predictions.parquet"):
             assert (run_dir / name).is_file(), f"{model}: {name}"
         assert (run_dir / "shap" / "shap_beeswarm.png").is_file()
+        # 誤差評価（残差の診断・学習の推移・学習曲線・検証曲線）
+        evaluation = {p.name for p in (run_dir / "evaluation").iterdir()}
+        assert {
+            "residual_summary.csv",
+            "residual_distribution.png",
+            "qq_plot.png",
+            "residual_acf_pacf.png",
+            "residual_plot.png",
+            "leverage_cooks_distance.png",
+            "training_history.png",
+            "learning_curve.png",
+            "validation_curve.png",
+        } <= evaluation
+        summary = pl.read_csv(run_dir / "evaluation" / "residual_summary.csv")
+        assert summary["series"].to_list() == ["all", *sorted(qs.TARGET_VARIABLES)]
         # テスト予測は 114日 × 3変数
         test_pred = pl.read_parquet(run_dir / "test_predictions.parquet")
         assert test_pred.height == qs.HORIZON * len(qs.TARGET_VARIABLES)

@@ -24,8 +24,11 @@
          前日までの移動平均（7, 30日）
        - CV: 日付のカットオフで3分割し、各検証期間の先頭114日（テスト期間と同じ長さ）を
          実測値を使わずに再帰予測して評価（再帰バックテスト）。評価指標はMAE
-    3. Optunaでハイパーパラメータを探索し、最良パラメータで学習・SHAP解釈・テスト期間の予測
-       （`modeling.experiment.run_experiment`）
+    3. Optunaでハイパーパラメータを探索し、最良パラメータで学習・SHAP解釈・誤差評価・
+       テスト期間の予測（`modeling.experiment.run_experiment`）
+       - 誤差評価（`modeling.evaluation`）: OOF予測の残差を系列ごとに診断する
+         （残差分布・正規Q-Q・残差の自己相関（ACF/PACF）・残差プロット・Leverage/Cookの距離）。
+         あわせて学習の推移・学習曲線（学習データ量）・検証曲線（learning_rate）も作る
     4. 2モデルのOOF予測から重みを最適化してアンサンブル（`modeling.ensemble.run_ensemble`）
     5. テスト期間の実測値と比べたMAE（変数別・全体）の表と、予測の比較図を保存
 
@@ -55,6 +58,8 @@ Usage:
 出力（既定のルートは `outputs/`）:
     - `experiments/delhi_{lightgbm,xgboost}/{実行日時}/`: CVスコア・OOF/テスト予測・
       ステップ別スコア（horizon_scores）・SHAP・チューニング履歴
+    - `experiments/delhi_{lightgbm,xgboost}/{実行日時}/evaluation/`: 誤差評価の図・表
+      （`residual_summary.csv` に全体と系列ごとの残差の要約）
     - `ensembles/delhi_blend/{実行日時}/`: アンサンブルのスコア・重み・予測
     - `optuna/`: Optuna study（同じコマンドを再実行すると続きから探索する）
     - `tables/delhi_quickstart__test_mae.csv`: テスト期間のMAE（変数別・全体）
@@ -123,6 +128,11 @@ HORIZON = 114
 
 # 目的変数の季節差分の周期（日次データの年周期）。前年同日との差を予測する
 SEASONAL_PERIOD = 365
+
+# 学習曲線で使う学習データの割合（各foldの学習データのうち、直近側から使う量）
+LEARNING_CURVE_SIZES = [0.25, 0.5, 0.75, 1.0]
+# 検証曲線で動かす learning_rate の値（LightGBM・XGBoost共通のパラメータ名）
+VALIDATION_CURVE_LEARNING_RATES = [0.01, 0.03, 0.1, 0.3]
 
 
 # --- データの読み込みと整形 ---------------------------------------------------------
@@ -308,6 +318,20 @@ def make_experiment_config(model: str, n_trials: int) -> ExperimentConfig:
             "tuning": {"enabled": True, "n_trials": n_trials},
             # SHAPによる解釈（各foldモデルをその検証期間のデータで説明する）
             "explain": {"enabled": True},
+            # 誤差評価の図・表（{出力}/evaluation/）。OOF予測の残差から作るため追加の学習は不要。
+            # 3系列（variable）のパネルデータなので、残差分布・Q-Q・ACF/PACFは系列ごとに描く
+            "evaluation": {
+                "enabled": True,
+                "max_series": len(TARGET_VARIABLES),  # 3系列すべてを描く
+                "training_history": True,  # 木の本数ごとの学習・検証の損失
+                # 学習曲線・検証曲線は各foldで学習し直すため時間がかかる（既定は無効）。
+                # 再帰予測の実験でも、ここでは1日先予測のスコア（季節差分の尺度）で評価される
+                "learning_curve": {"enabled": True, "train_sizes": LEARNING_CURVE_SIZES},
+                "validation_curve": {
+                    "param": "learning_rate",
+                    "values": VALIDATION_CURVE_LEARNING_RATES,
+                },
+            },
             "tracking": {"experiment_name": MLFLOW_EXPERIMENT},
         }
     )
@@ -475,6 +499,10 @@ def main(argv: list[str] | None = None) -> None:
         onestep = getattr(cv, "onestep_oof_scores", {}).get("mae", float("nan"))
         print(f"  CV MAE（再帰{HORIZON}日）={cv.oof_scores['mae']:.4f} / 参考: 1日先={onestep:.4f}")
         print(f"  出力: {results[model].output_dir}")
+        # 誤差評価: 系列ごとの残差の要約（平均が0から離れていれば予測が偏っている）
+        summary = pl.read_csv(results[model].output_dir / "evaluation" / "residual_summary.csv")
+        print("  誤差評価（OOF予測の残差 = 実測値 − 予測値）:")
+        print(summary.select("series", "n", "mean", "std", "skewness", "excess_kurtosis", "mae"))
 
     # 4. アンサンブル（保存済みのOOF予測から重みを求め、テスト予測を加重平均する）
     ensemble_tracker: Tracker = (
