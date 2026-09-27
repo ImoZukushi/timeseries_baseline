@@ -21,15 +21,24 @@ from feature_engineering._polars_sklearn import as_variable_list, to_numpy_2d
 
 
 class LogTransformer(BaseEstimator, TransformerMixin):
-    """対数変換。0以下の値はnullにする。
+    """対数変換 `log(x + offset)`。`x + offset` が0以下の値はnullにする。
+
+    Args:
+        variables: 対象カラム名。
+        base: 対数の底（既定は自然対数）。
+        offset: 対数を取る前に足す値。0を含む系列（件数など）では `offset=1`
+            （`log(1 + x)`）のように指定する。既定0で通常の対数変換。
 
     Attributes:
         variables_: fitで確定した対象カラム名のリスト。
     """
 
-    def __init__(self, variables: str | Sequence[str], base: float = math.e) -> None:
+    def __init__(
+        self, variables: str | Sequence[str], base: float = math.e, offset: float = 0.0
+    ) -> None:
         self.variables = variables
         self.base = base
+        self.offset = offset
 
     def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
@@ -38,15 +47,17 @@ class LogTransformer(BaseEstimator, TransformerMixin):
 
     def transform(self, X: pl.DataFrame) -> pl.DataFrame:
         """対数変換を適用する。"""
-        exprs = [
-            pl.when(pl.col(col) > 0).then(pl.col(col).log(self.base)).otherwise(None).alias(col)
-            for col in self.variables_
-        ]
+        exprs = []
+        for col in self.variables_:
+            shifted = pl.col(col) + self.offset
+            exprs.append(
+                pl.when(shifted > 0).then(shifted.log(self.base)).otherwise(None).alias(col)
+            )
         return X.with_columns(exprs)
 
     def inverse_transform(self, X: pl.DataFrame) -> pl.DataFrame:
-        """対数変換の逆変換（累乗）を適用する。"""
-        exprs = [(self.base ** pl.col(col)).alias(col) for col in self.variables_]
+        """対数変換の逆変換（`base ** y - offset`）を適用する。"""
+        exprs = [(self.base ** pl.col(col) - self.offset).alias(col) for col in self.variables_]
         return X.with_columns(exprs)
 
 

@@ -167,3 +167,12 @@ def test_power_transformer_does_not_standardize() -> None:
     t = PolarsPowerTransformer("x", method="box-cox").fit(train)
     out = t.transform(train)["x"].to_numpy()
     assert not np.isclose(out.mean(), 0.0, atol=1e-2)
+
+
+def test_log_transformer_offset_handles_zero_and_round_trips() -> None:
+    train = pl.DataFrame({"x": [0.0, 1.0, 9.0]})
+    t = LogTransformer("x", offset=1.0).fit(train)
+    out = t.transform(train)
+    assert out["x"].to_list() == pytest.approx([0.0, math.log(2), math.log(10)])
+    back = t.inverse_transform(out)
+    assert back["x"].to_list() == pytest.approx(train["x"].to_list())
