@@ -27,12 +27,14 @@ import numpy as np
 import polars as pl
 from sklearn.pipeline import Pipeline
 
+from feature_engineering.numeric import LogTransformer
+from feature_engineering.series_transform import DifferenceTransformer, make_series_transformer
 from feature_engineering.time_series import (
     LagFeatureGenerator,
     MovingAverageTransformer,
     RateOfChangeTransformer,
 )
-from modeling.config import ExperimentConfig, ForecastConfig
+from modeling.config import ClipConfig, ExperimentConfig, ForecastConfig
 from modeling.cv import Fold, folds_to_ids
 from modeling.metrics import get_metric
 from modeling.models import get_model_spec
@@ -142,12 +144,22 @@ def _check_future_after_history(
         )
 
 
+def _apply_clip(pred: np.ndarray, clip: ClipConfig) -> np.ndarray:
+    """予測値を設定の範囲に収める（NaNはそのまま）。"""
+    return np.clip(
+        pred,
+        -np.inf if clip.min is None else clip.min,
+        np.inf if clip.max is None else clip.max,
+    )
+
+
 def recursive_forecast(
     pipeline: Pipeline,
     history: pl.DataFrame,
     future: pl.DataFrame,
     builder: TargetFeatureBuilder,
     feature_columns: Sequence[str],
+    apply_clip: bool = True,
 ) -> np.ndarray:
     """予測値を履歴に追加しながら、未来の行を1ステップずつ予測する。
 
@@ -159,13 +171,14 @@ def recursive_forecast(
         future: 予測対象の行（目的変数の値は参照しない）。
         builder: 目的変数の特徴量を作るビルダー。
         feature_columns: モデルに渡す列（学習時の `X` の列と同じ並び）。
+        apply_clip: 各ステップの予測値に `forecast.clip` を適用するか。目的変数を変換している
+            場合は変換後の尺度での範囲制限に意味が無いため、呼び出し側で False にする。
 
     Returns:
         `future` の行順に並んだ予測値。
     """
     target, time_col, series_col = builder.target, builder.time_col, builder.series_col
     _check_future_after_history(history, future, time_col, series_col)
-    clip = builder.config.clip
     # 予測対象行の目的変数は（あっても）使わないよう必ず空にする
     steps = step_index(future, time_col, series_col)
     fut = future.with_row_index(_ROW).with_columns(
@@ -194,11 +207,8 @@ def recursive_forecast(
         )
         built = builder.build(context).filter(pl.col(_IS_FUTURE))
         pred = predict(pipeline, built.select(list(feature_columns)), Task.REGRESSION)
-        pred = np.clip(
-            pred,
-            -np.inf if clip.min is None else clip.min,
-            np.inf if clip.max is None else clip.max,
-        )
+        if apply_clip:
+            pred = _apply_clip(pred, builder.config.clip)
         preds[current[_ROW].to_numpy()] = pred
         # 予測値を目的変数として履歴に追加し、次のステップのラグの元にする
         hist = pl.concat(
@@ -227,6 +237,139 @@ class ForecastCVResult(CVResult):
     onestep_oof_scores: dict[str, float] = field(default_factory=dict)
 
 
+class TargetTransform:
+    """目的変数の変換（対数・差分系）と、予測値を元の尺度に戻す処理をまとめたもの。
+
+    モデルは変換後の系列 z を学習・再帰予測し、評価・出力の前に元の尺度 y に戻す。
+    変換は `feature_engineering.series_transform.make_series_transformer` で作る。
+
+    - 再帰予測の逆変換: 学習期間の元データの末尾を起点に、予測した z を累積して y に戻す。
+    - 1期先予測の逆変換: 各行の真の過去値 `y_{t-p}` を起点に `y_t = inv(z_t + b(y_{t-p}))`。
+
+    Args:
+        kind: 変換の種類（`log` / `diff` / `log_diff` / `seasonal_diff` / `log_seasonal_diff`）。
+        target: 目的変数の列名。
+        series_col: 系列IDの列（単一系列ならNone）。
+        seasonal_period: 季節差分の周期。
+        offset: 対数系の変換で `log(y + offset)` にする値。
+
+    Attributes:
+        y_model: fitしたデータの変換後の目的変数（差分が計算できない先頭行はNaN）。
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        target: str,
+        series_col: str | None = None,
+        seasonal_period: int | None = None,
+        offset: float = 0.0,
+    ) -> None:
+        self.kind = kind
+        self.target = target
+        self.series_col = series_col
+        self.offset = offset
+        self.transformer = make_series_transformer(
+            kind, target, seasonal_period=seasonal_period or 1, offset=offset, group_by=series_col
+        )
+        self.y_model = np.zeros(0)
+        self._lagged_base = np.zeros(0)
+
+    @property
+    def is_log(self) -> bool:
+        """対数を取る変換か。"""
+        return self.kind.startswith("log")
+
+    def fit(self, frame: pl.DataFrame) -> TargetTransform:
+        """学習データの目的変数を変換し、1期先予測の逆変換に使う起点を計算する。
+
+        Args:
+            frame: 学習データ（系列ごとに時刻の昇順）。
+
+        Raises:
+            ValueError: 対数系の変換で `y + offset` が0以下の値がある場合。
+        """
+        if self.is_log:
+            n_bad = frame.filter(pl.col(self.target) + self.offset <= 0).height
+            if n_bad:
+                raise ValueError(
+                    f"目的変数に log を取れない値（y + offset <= 0）が {n_bad} 件あります。"
+                    " forecast.target_offset を指定してください"
+                )
+        self.transformer.fit(frame)
+        self.y_model = (
+            self.transformer.transform(frame)[self.target]
+            .cast(pl.Float64)
+            .fill_null(np.nan)
+            .to_numpy()
+        )
+        if isinstance(self.transformer, DifferenceTransformer):
+            # 1期先予測の起点: 各行の periods 期前の元の値（対数系なら log(y + offset)）
+            base = pl.col(self.target).cast(pl.Float64)
+            if self.is_log:
+                base = (base + self.offset).log()
+            lagged = base.shift(self.transformer.periods)
+            if self.series_col is not None:
+                lagged = lagged.over(self.series_col)
+            self._lagged_base = frame.select(lagged).to_series().fill_null(np.nan).to_numpy()
+        return self
+
+    def transform_frame(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """fitしたデータの目的変数列を、変換後の値に置き換えたフレームを返す。"""
+        return frame.with_columns(pl.Series(self.target, self.y_model))
+
+    def inverse_recursive(
+        self, z_pred: np.ndarray, future: pl.DataFrame, history: pl.DataFrame
+    ) -> np.ndarray:
+        """再帰予測した z を元の尺度に戻す。
+
+        Args:
+            z_pred: `future` の行順に並んだ変換後の予測値。
+            future: 予測対象の行（系列ごとに時刻の昇順）。
+            history: 予測対象の直前までの元データ（目的変数は元の尺度）。
+
+        Returns:
+            元の尺度の予測値。
+        """
+        keys = [] if self.series_col is None else [self.series_col]
+        frame = future.select(keys).with_columns(pl.Series(self.target, z_pred))
+        if isinstance(self.transformer, LogTransformer):
+            restored = self.transformer.inverse_transform(frame)
+        else:
+            restored = self.transformer.inverse_transform(frame, history=history)
+        return restored[self.target].cast(pl.Float64).fill_null(np.nan).to_numpy()
+
+    def inverse_one_step(self, z_pred: np.ndarray, rows: np.ndarray) -> np.ndarray:
+        """真の過去値を起点に、1期先予測の z を元の尺度に戻す。
+
+        Args:
+            z_pred: 変換後の予測値。
+            rows: `z_pred` の各値が、fitしたデータの何行目か。
+
+        Returns:
+            元の尺度の予測値（起点が無い先頭行はNaN）。
+        """
+        base = (
+            z_pred
+            if not isinstance(self.transformer, DifferenceTransformer)
+            else (z_pred + self._lagged_base[rows])
+        )
+        return np.exp(base) - self.offset if self.is_log else base
+
+
+def make_target_transform(config: ExperimentConfig) -> TargetTransform | None:
+    """実験設定から `TargetTransform` を作る（`forecast.target_transform` が無ければNone）。"""
+    if config.forecast is None or config.forecast.target_transform is None:
+        return None
+    return TargetTransform(
+        config.forecast.target_transform,
+        config.data.target,
+        series_col=config.forecast.series_col,
+        seasonal_period=config.forecast.seasonal_period,
+        offset=config.forecast.target_offset,
+    )
+
+
 def make_builder(config: ExperimentConfig) -> TargetFeatureBuilder:
     """実験設定から `TargetFeatureBuilder` を作る。
 
@@ -247,18 +390,25 @@ def recursive_backtest(
     test_frame: pl.DataFrame | None = None,
     params: dict[str, Any] | None = None,
     fold_callback: FoldCallback | None = None,
+    target_transform: TargetTransform | None = None,
 ) -> ForecastCVResult:
     """fold毎に1期先モデルを学習し、検証期間を再帰予測して評価する。
+
+    `target_transform` を指定すると、モデルは変換後の目的変数を学習・再帰予測し、
+    予測値を元の尺度に戻してから評価する（OOF・テスト予測も元の尺度）。
+    差分が計算できない各系列の先頭行は学習から除外するが、データの行・CV分割は変えない。
 
     Args:
         config: 実験設定（`forecast` 必須）。
         frame: 学習データ全体（目的変数・時刻・系列列を含む。`X` と同じ行順）。
+            `target_transform` 指定時は、目的変数列が変換後の値のもの。
         X: 学習データの特徴量（目的変数の特徴量を含む。`frame` と同じ行順）。
-        y: 目的変数。
+        y: 元の尺度の目的変数（評価に使う）。
         folds: CV分割。
         test_frame: 予測対象の将来の行（任意）。学習データ全体を履歴として再帰予測する。
         params: モデルパラメータ（Noneなら設定値）。
         fold_callback: fold完了ごとに `(fold番号, 再帰予測の主指標)` で呼ばれる関数。
+        target_transform: fit済みの目的変数の変換（Noneなら変換しない）。
 
     Returns:
         再帰バックテストの結果。
@@ -266,12 +416,30 @@ def recursive_backtest(
     builder = make_builder(config)
     assert config.forecast is not None
     horizon = config.forecast.horizon
+    clip = config.forecast.clip
     time_col, series_col = builder.time_col, builder.series_col
     n = X.height
     metrics = [get_metric(name) for name in config.metrics]
     spec = get_model_spec(config.model.name)
     use_params = config.model.params if params is None else params
     feature_columns = X.columns
+    target = config.data.target
+    tt = target_transform
+    # モデルが学習する目的変数（変換ありなら z、差分が計算できない先頭行はNaN）
+    y_fit = y if tt is None else tt.y_model
+    fittable = np.isfinite(y_fit)
+    # 逆変換の起点に使う、元の尺度の目的変数を持つフレーム
+    original = frame if tt is None else frame.with_columns(pl.Series(target, y))
+
+    def forecast(pipeline: Pipeline, history_idx: np.ndarray, future: pl.DataFrame) -> np.ndarray:
+        """history_idx の行を履歴として future を再帰予測し、元の尺度で返す。"""
+        pred = recursive_forecast(
+            pipeline, frame[history_idx], future, builder, feature_columns, apply_clip=tt is None
+        )
+        if tt is None:
+            return pred
+        # 変換後の尺度で再帰予測した値を元の尺度に戻してから範囲制限する
+        return _apply_clip(tt.inverse_recursive(pred, future, original[history_idx]), clip)
 
     oof = np.full(n, np.nan)
     onestep = np.full(n, np.nan)
@@ -282,18 +450,27 @@ def recursive_backtest(
     evaluated_folds: list[Fold] = []
 
     for i, (train_idx, valid_idx) in enumerate(folds):
+        fit_idx = train_idx[fittable[train_idx]]
+        # early stopping 用の検証データ（目的変数が計算できる行のみ。無ければ渡さない）
+        es_idx = valid_idx[fittable[valid_idx]]
         pipeline = fit_pipeline(
-            config, X[train_idx], y[train_idx], X[valid_idx], y[valid_idx], params=use_params
+            config,
+            X[fit_idx],
+            y_fit[fit_idx],
+            X[es_idx] if len(es_idx) else None,
+            y_fit[es_idx] if len(es_idx) else None,
+            params=use_params,
         )
-        onestep[valid_idx] = predict(pipeline, X[valid_idx], Task.REGRESSION)
+        onestep_pred = predict(pipeline, X[valid_idx], Task.REGRESSION)
+        onestep[valid_idx] = (
+            onestep_pred if tt is None else tt.inverse_one_step(onestep_pred, valid_idx)
+        )
 
         valid_frame = frame[valid_idx]
         valid_steps = step_index(valid_frame, time_col, series_col)
         keep = valid_steps <= horizon if horizon is not None else np.ones(len(valid_idx), bool)
         target_idx = valid_idx[keep]
-        pred = recursive_forecast(
-            pipeline, frame[train_idx], frame[target_idx], builder, feature_columns
-        )
+        pred = forecast(pipeline, train_idx, frame[target_idx])
         oof[target_idx] = pred
         steps[target_idx] = valid_steps[keep]
         for m in metrics:
@@ -307,26 +484,26 @@ def recursive_backtest(
     # horizonで打ち切った行は「予測していない行」としてfold番号を-1にする
     fold_ids = folds_to_ids(evaluated_folds, n)
     predicted = fold_ids >= 0
-    onestep_predicted = folds_to_ids(folds, n) >= 0
+    # 1期先予測は、起点が無く元の尺度に戻せない行（差分の先頭行）を評価から除く
+    onestep_predicted = (folds_to_ids(folds, n) >= 0) & np.isfinite(onestep)
 
     test_pred: np.ndarray | None = None
     if test_frame is not None:
+        all_rows = np.arange(n)
         if config.test_prediction == "fold_mean":
-            test_pred = np.mean(
-                [
-                    recursive_forecast(m, frame, test_frame, builder, feature_columns)
-                    for m in models
-                ],
-                axis=0,
-            )
+            # 変換ありの場合も、元の尺度に戻してから平均する
+            test_pred = np.mean([forecast(m, all_rows, test_frame) for m in models], axis=0)
         else:
             full_params = use_params
             iters = [b for b in best_iterations if b is not None]
             if iters:
                 full_params = spec.with_n_iterations(use_params, int(np.mean(iters)))
-            full = fit_pipeline(config, X, y, params=full_params, early_stopping=False)
+            fit_rows = all_rows[fittable]
+            full = fit_pipeline(
+                config, X[fit_rows], y_fit[fit_rows], params=full_params, early_stopping=False
+            )
             models.append(full)
-            test_pred = recursive_forecast(full, frame, test_frame, builder, feature_columns)
+            test_pred = forecast(full, all_rows, test_frame)
 
     return ForecastCVResult(
         oof_pred=oof,

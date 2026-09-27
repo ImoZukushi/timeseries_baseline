@@ -14,7 +14,7 @@ import polars as pl
 
 from modeling.config import ExperimentConfig
 from modeling.cv import Fold
-from modeling.forecasting import recursive_backtest
+from modeling.forecasting import TargetTransform, recursive_backtest
 from modeling.trainer import CVResult, FoldCallback, run_cv
 
 
@@ -24,14 +24,16 @@ class Dataset:
 
     Attributes:
         X: 学習データの特徴量（`forecast` 指定時は目的変数の特徴量も含む）。
-        y: エンコード済みの目的変数。
+        y: エンコード済みの目的変数（`forecast.target_transform` 指定時も元の尺度。評価・出力用）。
         classes: 分類タスクの元のクラスラベル（回帰ではNone）。
         folds: CV分割。
         ids: 学習データの行ID（`data.id_col` 指定時）。
         X_test: テストデータの特徴量（`forecast` 指定時は再帰的に作るためNone）。
         ids_test: テストデータの行ID。
         frame: 学習データ全体（`forecast` 指定時のみ。目的変数・時刻・系列列を含む）。
+            `target_transform` 指定時は、目的変数列が変換後の値のもの。
         test_frame: テストデータ全体（`forecast` 指定時のみ）。
+        target_transform: fit済みの目的変数の変換（`forecast.target_transform` 指定時のみ）。
     """
 
     X: pl.DataFrame
@@ -43,6 +45,7 @@ class Dataset:
     ids_test: pl.Series | None = None
     frame: pl.DataFrame | None = None
     test_frame: pl.DataFrame | None = None
+    target_transform: TargetTransform | None = None
 
     @property
     def n_classes(self) -> int | None:
@@ -81,6 +84,7 @@ def cross_validate(
             test_frame=dataset.test_frame if predict_test else None,
             params=params,
             fold_callback=fold_callback,
+            target_transform=dataset.target_transform,
         )
     return run_cv(
         config,

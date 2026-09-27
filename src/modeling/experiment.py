@@ -19,7 +19,7 @@ from modeling.config import ExperimentConfig
 from modeling.cv import make_folds
 from modeling.dataset import Dataset, cross_validate
 from modeling.explain import compute_oof_shap, save_shap_outputs
-from modeling.forecasting import ForecastCVResult, make_builder
+from modeling.forecasting import ForecastCVResult, make_builder, make_target_transform
 from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_predictions
 from modeling.tasks import encode_target
 from modeling.tracking import NullTracker, Tracker
@@ -129,7 +129,13 @@ def prepare_dataset(
         builder = make_builder(config)
         if config.forecast.series_col is not None and config.forecast.series_col not in train:
             raise KeyError(f"学習データに列がありません: {config.forecast.series_col}")
-        frame = builder.build(train)
+        # 目的変数を変換する場合、モデルが扱う系列（ラグ・移動平均の元）は変換後の値になる。
+        # 評価・出力に使う y は元の尺度のまま残す
+        target_transform = make_target_transform(config)
+        model_frame = train
+        if target_transform is not None:
+            model_frame = target_transform.fit(train).transform_frame(train)
+        frame = builder.build(model_frame)
         return Dataset(
             X=frame.select([*features, *builder.feature_names]),
             y=y,
@@ -137,8 +143,9 @@ def prepare_dataset(
             folds=folds,
             ids=None if data.id_col is None else train[data.id_col],
             ids_test=ids_test,
-            frame=train,
+            frame=model_frame,
             test_frame=test,
+            target_transform=target_transform,
         )
 
     return Dataset(

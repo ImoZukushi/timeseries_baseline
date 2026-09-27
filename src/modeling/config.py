@@ -219,7 +219,16 @@ class ForecastConfig(_StrictModel):
             （t-1 から過去w期の平均。現在値 y_t を含まないためリークしない）。
         rate_of_change: `{target}_lag_1` の前期比（(y_{t-1} - y_{t-2}) / y_{t-2}）を加えるか。
         horizon: バックテストで評価する最大ステップ数（Noneなら検証期間全体）。
-        clip: 再帰中の予測値の範囲制限（誤差の暴走を防ぐ。例: 非負の目的変数なら min=0）。
+        clip: 予測値の範囲制限（誤差の暴走を防ぐ。例: 非負の目的変数なら min=0）。
+            `target_transform` なしなら再帰中の各ステップに、ありなら元の尺度に戻した
+            最終予測に適用する。
+        target_transform: 目的変数の変換（`log` / `diff` / `log_diff` / `seasonal_diff` /
+            `log_seasonal_diff`。Noneなら変換しない）。指定するとモデルは変換後の系列を
+            学習・再帰予測し（ラグ・移動平均も変換後の系列から作る）、予測値を元の尺度に
+            戻してから評価・出力する。GBDTは学習範囲の外へ外挿できないため、トレンドの
+            ある系列では差分系の変換が有効。
+        seasonal_period: 季節差分の周期（`seasonal_diff` / `log_seasonal_diff` で必須）。
+        target_offset: 対数系の変換で `log(y + offset)` にする値（0を含む目的変数では1など）。
     """
 
     series_col: str | None = None
@@ -228,6 +237,11 @@ class ForecastConfig(_StrictModel):
     rate_of_change: bool = False
     horizon: int | None = Field(default=None, ge=1)
     clip: ClipConfig = Field(default_factory=ClipConfig)
+    target_transform: (
+        Literal["log", "diff", "log_diff", "seasonal_diff", "log_seasonal_diff"] | None
+    ) = None
+    seasonal_period: int | None = Field(default=None, ge=1)
+    target_offset: float = 0.0
 
     @model_validator(mode="after")
     def _check_values(self) -> ForecastConfig:
@@ -237,6 +251,11 @@ class ForecastConfig(_StrictModel):
             )
         if any(w < 1 for w in self.rolling_windows):
             raise ValueError("forecast.rolling_windows は1以上で指定してください")
+        is_seasonal = self.target_transform in ("seasonal_diff", "log_seasonal_diff")
+        if is_seasonal and self.seasonal_period is None:
+            raise ValueError(
+                f"target_transform: {self.target_transform} には seasonal_period が必要です"
+            )
         if (self.rolling_windows or self.rate_of_change) and 1 not in self.lags:
             raise ValueError("rolling_windows / rate_of_change には lags に 1 を含めてください")
         return self
