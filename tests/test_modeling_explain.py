@@ -116,18 +116,56 @@ def test_save_shap_outputs_multiclass(synthetic_frame: pl.DataFrame, tmp_path: P
     shap_result = compute_oof_shap(cfg, ds.X, ds.folds, result, n_classes=3)
     paths = save_shap_outputs(shap_result, tmp_path, "多クラス実験", ["0", "1", "2"])
     names = {p.name for p in paths}
+    # 相関の表・図はクラスごとに作る
+    per_class = {
+        f"{stem}_class_{k}{ext}"
+        for k in range(3)
+        for stem, ext in [
+            ("shap_beeswarm", ".png"),
+            ("shap_feature_correlation", ".csv"),
+            ("shap_correlation_bar", ".png"),
+            ("shap_dependence", ".png"),
+            ("shap_value_correlation", ".csv"),
+            ("shap_value_correlation_heatmap", ".png"),
+            ("shap_value_scatter_matrix", ".png"),
+        ]
+    }
     assert names == {
         "shap_importance.csv",
         "shap_importance_bar.png",
-        "shap_beeswarm_class_0.png",
-        "shap_beeswarm_class_1.png",
-        "shap_beeswarm_class_2.png",
         "shap_values.parquet",
+        *per_class,
     }
     assert all(p.is_file() for p in paths)
     values = pl.read_parquet(tmp_path / "shap_values.parquet")
     assert values.columns[0] == "row"
     assert values.width == 1 + ds.X.width * 3
+
+
+def test_save_shap_outputs_regression_correlation_top_k(
+    synthetic_frame: pl.DataFrame, tmp_path: Path
+) -> None:
+    cfg = _config(explain={"correlation_top_k": 3, "scatter_matrix_top_k": 2})
+    ds, result = _run(synthetic_frame, cfg)
+    shap_result = compute_oof_shap(cfg, ds.X, ds.folds, result)
+    names = {p.name for p in save_shap_outputs(shap_result, tmp_path, "回帰", None, cfg.explain)}
+    assert {
+        "shap_beeswarm.png",
+        "shap_feature_correlation.csv",
+        "shap_correlation_bar.png",
+        "shap_dependence.png",
+        "shap_value_correlation.csv",
+        "shap_value_correlation_heatmap.png",
+        "shap_value_scatter_matrix.png",
+    } <= names
+    # 相関行列は上位3特徴量のみ（先頭列 feature + k列）
+    k = min(3, ds.X.width)
+    matrix = pl.read_csv(tmp_path / "shap_value_correlation.csv")
+    assert matrix.shape == (k, k + 1)
+    # y_reg = 2a + b + ノイズ なので a の値が大きいほど予測が上がる
+    corr = pl.read_csv(tmp_path / "shap_feature_correlation.csv")
+    assert corr.row(0, named=True)["feature"] == "a"
+    assert corr.row(0, named=True)["direction"] == "正"
 
 
 def test_run_experiment_writes_shap_outputs(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:

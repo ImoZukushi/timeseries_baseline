@@ -24,7 +24,14 @@ import pandas as pd
 import polars as pl
 import shap
 
-from modeling.config import ExperimentConfig
+from evaluation.shap_correlation import (
+    ShapCorrelationBarDisplay,
+    ShapDependenceDisplay,
+    ShapScatterMatrixDisplay,
+    ShapValueCorrelationDisplay,
+    shap_feature_correlation,
+)
+from modeling.config import ExperimentConfig, ExplainConfig
 from modeling.cv import Fold
 from modeling.models import get_model_spec
 from modeling.pipeline import MODEL_STEP
@@ -216,23 +223,87 @@ def plot_beeswarm(result: ShapResult, title: str, class_index: int | None = None
     return fig
 
 
+def _correlation_outputs(
+    values: np.ndarray,
+    data: np.ndarray,
+    feature_names: list[str],
+    experiment_name: str,
+    suffix: str,
+    label: str,
+    explain: ExplainConfig,
+) -> tuple[list[tuple[str, pl.DataFrame]], list[tuple[str, plt.Figure]]]:
+    """1組のSHAP値（回帰・二値、または多クラスの1クラス分）から相関の表・図を作る。"""
+    tables = [
+        (
+            f"shap_feature_correlation{suffix}.csv",
+            shap_feature_correlation(values, data, feature_names),
+        )
+    ]
+    figures: list[tuple[str, plt.Figure]] = [
+        (
+            f"shap_correlation_bar{suffix}.png",
+            ShapCorrelationBarDisplay(tables[0][1])
+            .plot(title=f"{experiment_name}: SHAP重要度と効きの向き{label}")
+            .figure_,
+        ),
+        (
+            f"shap_dependence{suffix}.png",
+            ShapDependenceDisplay.from_shap(
+                values,
+                data,
+                feature_names,
+                top_k=explain.dependence_top_k,
+                title=f"{experiment_name}: 特徴量の値とSHAP値の関係{label}",
+            ).figure_,
+        ),
+    ]
+    if len(feature_names) >= 2:
+        # 特徴量同士のSHAP値の相関（特徴量が1つだけなら作らない）
+        heatmap = ShapValueCorrelationDisplay.from_shap(
+            values,
+            feature_names,
+            top_k=explain.correlation_top_k,
+            title=f"{experiment_name}: 特徴量同士のSHAP値の相関{label}",
+        )
+        tables.append((f"shap_value_correlation{suffix}.csv", heatmap.matrix))
+        figures.append((f"shap_value_correlation_heatmap{suffix}.png", heatmap.figure_))
+        figures.append(
+            (
+                f"shap_value_scatter_matrix{suffix}.png",
+                ShapScatterMatrixDisplay.from_shap(
+                    values,
+                    feature_names,
+                    top_k=explain.scatter_matrix_top_k,
+                    title=f"{experiment_name}: 特徴量同士のSHAP値の散布図{label}",
+                ).figure_,
+            )
+        )
+    return tables, figures
+
+
 def save_shap_outputs(
     result: ShapResult,
     output_dir: Path,
     experiment_name: str,
     class_names: list[str] | None = None,
+    explain: ExplainConfig | None = None,
 ) -> list[Path]:
     """SHAPの重要度表・図・値を保存し、保存したパスのリストを返す。
+
+    重要度・beeswarmに加えて、相関の表・図（`evaluation.shap_correlation`）も保存する。
+    多クラス分類ではクラスごとに作り、ファイル名に `_class_{k}` を付ける。
 
     Args:
         result: OOF SHAPの計算結果。
         output_dir: 保存先ディレクトリ。
         experiment_name: 図のタイトルに使う実験名。
         class_names: 多クラス分類のクラスラベル（図のタイトル・列名に使う）。
+        explain: 相関の図に含める特徴量数などの設定（Noneなら既定値）。
 
     Returns:
         保存したファイルのパス。
     """
+    explain = explain or ExplainConfig()
     output_dir.mkdir(parents=True, exist_ok=True)
     caption = (
         f"OOF SHAP（各foldモデルをその検証データで説明） n={len(result.rows):,}, "
@@ -261,6 +332,27 @@ def save_shap_outputs(
         figures.append(
             ("shap_beeswarm.png", plot_beeswarm(result, f"{experiment_name}: SHAP beeswarm"))
         )
+
+    # 相関: 特徴量の値とSHAP値の相関、特徴量同士のSHAP値の相関
+    data = result.data.to_numpy(dtype=np.float64, na_value=np.nan)
+    if result.values.ndim == 3:
+        names = class_names or [str(k) for k in range(result.values.shape[2])]
+        sets = [
+            (result.values[:, :, k], f"_class_{k}", f"（クラス {name}）")
+            for k, name in enumerate(names)
+        ]
+    else:
+        sets = [(result.values, "", "")]
+    for values, suffix, label in sets:
+        tables, corr_figures = _correlation_outputs(
+            values, data, result.feature_names, experiment_name, suffix, label, explain
+        )
+        for filename, table in tables:
+            path = output_dir / filename
+            table.write_csv(path)
+            paths.append(path)
+        figures.extend(corr_figures)
+
     for filename, fig in figures:
         add_caption(fig, caption)
         path = output_dir / filename

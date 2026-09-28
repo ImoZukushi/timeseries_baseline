@@ -313,7 +313,7 @@ def run_experiment(
             )
             class_names = None if dataset.classes is None else [str(c) for c in dataset.classes]
             for path in save_shap_outputs(
-                shap_result, output_dir / "shap", config.name, class_names
+                shap_result, output_dir / "shap", config.name, class_names, config.explain
             ):
                 tracker.log_artifact(path, artifact_path="shap")
         run_id = tracker.active_run_id()

@@ -168,10 +168,16 @@ class ExplainConfig(_StrictModel):
     Attributes:
         enabled: SHAPを計算するか。
         max_samples: SHAP計算に使う最大サンプル数（計算量削減のためサンプリングする）。
+        dependence_top_k: 「特徴量の値 vs SHAP値」の散布図を描く特徴量数（重要度上位）。
+        correlation_top_k: SHAP値同士の相関行列に含める特徴量数（重要度上位）。
+        scatter_matrix_top_k: SHAP値同士の散布図行列に含める特徴量数（重要度上位）。
     """
 
     enabled: bool = True
     max_samples: int = Field(default=2000, ge=1)
+    dependence_top_k: int = Field(default=6, ge=1)
+    correlation_top_k: int = Field(default=15, ge=2)
+    scatter_matrix_top_k: int = Field(default=5, ge=2)
 
 
 class TrackingConfig(_StrictModel):
