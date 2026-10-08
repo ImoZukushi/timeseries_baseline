@@ -266,6 +266,65 @@ def test_multi_series_residuals_are_split_per_series(tmp_path: Path) -> None:
     assert single_summary["series"].to_list() == ["all", "A", "B"]
 
 
+def test_forecast_residual_diagnostics_recursive_and_onestep(tmp_path: Path) -> None:
+    result = _run(_ts_frame(), _ts_config(ljung_box_lags=[3, 7]), tmp_path)
+    files = _files(result)
+    # 再帰予測と1期先予測の両方を、系列ごとに診断する
+    assert {
+        "residual_tests.csv",
+        "ljung_box.csv",
+        "residual_timeseries.png",
+        "residual_timeseries_onestep.png",
+        "residual_diagnostics__recursive__A.png",
+        "residual_diagnostics__recursive__B.png",
+        "residual_diagnostics__onestep__A.png",
+        "residual_diagnostics__onestep__B.png",
+    } <= files
+    tests = pl.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
+    assert tests.select("residual_type", "series").rows() == [
+        ("recursive", "A"),
+        ("recursive", "B"),
+        ("onestep", "A"),
+        ("onestep", "B"),
+    ]
+    lb = pl.read_csv(result.output_dir / "evaluation" / "ljung_box.csv")
+    assert set(lb["lag"]) == {3, 7}
+
+
+def test_forecast_residual_diagnostics_respect_max_series(tmp_path: Path) -> None:
+    result = _run(_ts_frame(), _ts_config(max_series=1), tmp_path)
+    files = _files(result)
+    assert "residual_diagnostics__onestep__A.png" in files
+    assert "residual_diagnostics__onestep__B.png" not in files
+    # 検定の表は全系列
+    tests = pl.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
+    assert set(tests["series"]) == {"A", "B"}
+
+
+def test_time_series_task_without_forecast_uses_oof_residuals(
+    synthetic_frame: pl.DataFrame, tmp_path: Path
+) -> None:
+    raw = _config("regression").model_dump(mode="json", by_alias=True)
+    raw.update(task="time_series", cv={"method": "time_series", "n_splits": 3})
+    raw["data"]["time_col"] = "ts"
+    result = _run(synthetic_frame, ExperimentConfig.model_validate(raw), tmp_path)
+    files = _files(result)
+    assert {
+        "residual_tests.csv",
+        "residual_timeseries.png",
+        "residual_diagnostics__oof.png",
+    } <= files
+    tests = pl.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
+    assert tests.select("residual_type", "series").rows() == [("oof", "all")]
+
+
+def test_regression_without_time_col_has_no_time_series_diagnostics(
+    synthetic_frame: pl.DataFrame, tmp_path: Path
+) -> None:
+    files = _files(_run(synthetic_frame, _config("regression"), tmp_path))
+    assert not any(f.startswith(("residual_tests", "residual_diagnostics")) for f in files)
+
+
 def test_single_series_summary_has_only_overall_row(
     synthetic_frame: pl.DataFrame, tmp_path: Path
 ) -> None:

@@ -4,17 +4,21 @@
 
 | タスク | 作る図 |
 |---|---|
-| 回帰・時系列 | 残差分布・残差プロット・Q-Q・Leverage/Cookの距離・残差のACF/PACF（時刻列あり） |
+| 回帰・時系列 | 残差分布・残差プロット・Q-Q・Leverage/Cookの距離 |
+| 時刻列あり | 上記＋残差のACF/PACF・残差の推移・残差診断（Ljung-Box・Jarque-Bera・ADF・KPSS） |
 | 二値分類 | 混同行列（確率0.5以上を陽性）・ROC曲線・PR曲線 |
 | 多クラス分類 | 混同行列（確率が最大のクラス）・ROC曲線・PR曲線（One-vs-Rest） |
 | 共通 | 学習の推移（記録があれば）・学習曲線／検証曲線（設定で有効な場合） |
 
 すべてOOF（各foldのモデルが、学習に使っていない検証データに対して出した予測）で評価する。
-再帰予測の実験では、OOFは元の尺度の再帰予測の値。
+再帰予測の実験では、OOFは元の尺度の再帰予測の値。時系列の残差診断だけは、再帰予測の残差
+（`residual_type=recursive`）に加えて1期先予測の残差（`onestep`）でも行う。多段先の残差は
+誤差が蓄積して自己相関を持つのが自然なため、モデルの当てはまりは1期先の残差で判断する。
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -44,8 +48,14 @@ from evaluation.residuals import (
     plot_residuals_by_group,
     residual_summary,
 )
+from evaluation.time_series_diagnostics import (
+    ResidualTimeSeriesDisplay,
+    TimeSeriesResidualDiagnosticsDisplay,
+    residual_tests,
+)
 from modeling.config import ExperimentConfig
 from modeling.dataset import Dataset
+from modeling.forecasting import ForecastCVResult
 from modeling.metrics import get_metric
 from modeling.models import get_model_spec
 from modeling.pipeline import MODEL_STEP, build_pipeline
@@ -209,6 +219,106 @@ def _save_regression(
             "residual_acf_pacf.png",
             f"{acf_note}。時刻順に並べた残差で計算（点線は無相関の場合の95%信頼区間）",
         )
+        _save_time_series_diagnostics(config, dataset, cv_result, saver)
+
+
+# --- 時系列の残差診断 --------------------------------------------------------------------
+
+# 診断する残差の種類 → (図のファイル名に付ける接尾辞, 説明)
+_RESIDUAL_TYPES = {
+    "oof": ("", "OOF予測の残差"),
+    "recursive": ("", "再帰予測（検証期間の実測値を使わない多段先予測）の残差"),
+    "onestep": ("_onestep", "1期先予測（真のラグを使う）の残差"),
+}
+
+
+def _residual_sets(cv_result: CVResult) -> dict[str, np.ndarray]:
+    """診断する残差の種類 → 予測値（元の尺度、学習データの全行分）。
+
+    再帰予測の実験では、再帰予測の残差（誤差が蓄積するため自己相関があるのが自然）と、
+    モデルの当てはまりを診断するための1期先予測の残差の両方を使う。
+    """
+    if isinstance(cv_result, ForecastCVResult):
+        sets = {"recursive": cv_result.oof_pred}
+        if cv_result.onestep_oof_pred.shape == cv_result.oof_pred.shape:
+            sets["onestep"] = cv_result.onestep_oof_pred
+        return sets
+    return {"oof": cv_result.oof_pred}
+
+
+def _safe_name(name: str) -> str:
+    """系列名をファイル名に使える文字列にする。"""
+    return re.sub(r"[^\w\-]+", "_", name).strip("_") or "series"
+
+
+def _save_time_series_diagnostics(
+    config: ExperimentConfig, dataset: Dataset, cv_result: CVResult, saver: _Saver
+) -> None:
+    """時刻順の残差の検定（Ljung-Box・Jarque-Bera・ADF・KPSS）と、残差の推移・診断パネルを保存する。
+
+    検定の表は全系列、図は `max_series` 系列まで。学習データは時刻順に並べ替え済みなので、
+    行番号の順がそのまま時刻順。時刻は `dataset.frame` の時刻列（無ければ行番号）を使い、
+    foldの境目では残差の折れ線を切る。
+    """
+    ev = config.evaluation
+    seasonal_period = config.forecast.seasonal_period if config.forecast is not None else None
+    time_col = config.data.time_col
+    times = (
+        dataset.frame[time_col].to_numpy()
+        if dataset.frame is not None and time_col in dataset.frame.columns
+        else None
+    )
+    test_frames, lb_frames = [], []
+    for residual_type, pred in _residual_sets(cv_result).items():
+        suffix, label = _RESIDUAL_TYPES[residual_type]
+        rows = np.flatnonzero((cv_result.fold_ids >= 0) & np.isfinite(pred))
+        if rows.size == 0:
+            continue
+        series_rows = _series_rows(config, dataset, rows) or {"all": rows}
+        residuals = {name: dataset.y[r] - pred[r] for name, r in series_rows.items()}
+        summary, lb = residual_tests(
+            residuals,
+            lags=ev.ljung_box_lags,
+            seasonal_period=seasonal_period,
+            regression=ev.unit_root_regression,
+            alpha=ev.test_alpha,
+        )
+        test_frames.append(summary.insert_column(0, pl.lit(residual_type).alias("residual_type")))
+        lb_frames.append(lb.insert_column(0, pl.lit(residual_type).alias("residual_type")))
+
+        shown = list(series_rows.items())[: ev.max_series]
+        note = f"{label}（OOF）"
+        if len(series_rows) > 1:
+            note = _series_note(note, len(shown), len(series_rows))
+        time_of = {name: (times[r] if times is not None else r) for name, r in shown}
+        segments_of = {name: cv_result.fold_ids[r] for name, r in shown}
+        saver.figure(
+            ResidualTimeSeriesDisplay.from_residuals(
+                {name: residuals[name] for name, _ in shown}, time=time_of, segments=segments_of
+            ).figure_,
+            f"residual_timeseries{suffix}.png",
+            f"{note}。点線はfoldの境目",
+        )
+        for name, _ in shown:
+            series_part = "" if len(series_rows) == 1 else f"__{_safe_name(name)}"
+            title = f"{label}" if len(series_rows) == 1 else f"{name}: {label}"
+            saver.figure(
+                TimeSeriesResidualDiagnosticsDisplay.from_residuals(
+                    residuals[name],
+                    time=time_of[name],
+                    segments=segments_of[name],
+                    lags=ev.ljung_box_lags,
+                    seasonal_period=seasonal_period,
+                    regression=ev.unit_root_regression,
+                    alpha=ev.test_alpha,
+                    title=f"{saver.experiment_name}: 時系列の残差診断（{title}）",
+                ).figure_,
+                f"residual_diagnostics__{residual_type}{series_part}.png",
+                f"{label}（OOF）。foldをつないだ時刻順の残差で検定",
+            )
+    if test_frames:
+        saver.table(pl.concat(test_frames, how="diagonal_relaxed"), "residual_tests.csv")
+        saver.table(pl.concat(lb_frames, how="diagonal_relaxed"), "ljung_box.csv")
 
 
 def _oof_influence(

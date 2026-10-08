@@ -17,7 +17,7 @@ from scipy import stats
 from sklearn.metrics import PredictionErrorDisplay
 
 from eda.time_series_eda import compute_acf, compute_pacf
-from evaluation._common import finite_pair, new_axes, subsample_index
+from evaluation._common import as_1d_float, finite_pair, new_axes, subsample_index
 from util.plotting import ensure_japanese_font
 
 
@@ -56,8 +56,15 @@ class ResidualDistributionDisplay:
     ) -> Self:
         """実測値と予測値から残差を計算して描く。"""
         t, p = finite_pair(y_true, y_pred)
-        disp = cls(t - p, residual_summary(t, p))
-        return disp.plot(ax=ax, bins=bins)
+        return cls.from_residuals(t - p, ax=ax, bins=bins)
+
+    @classmethod
+    def from_residuals(cls, residuals: Any, *, ax: Any = None, bins: int | str = "auto") -> Self:
+        """残差（実測値 − 予測値）から描く（欠損は除く）。"""
+        r = as_1d_float(residuals)
+        r = r[np.isfinite(r)]
+        # residual_summary は (実測値, 予測値) を受け取るため、予測値0として残差をそのまま渡す
+        return cls(r, residual_summary(r, np.zeros_like(r))).plot(ax=ax, bins=bins)
 
     def plot(self, ax: Any = None, *, bins: int | str = "auto") -> Self:
         """残差分布を描く。"""
@@ -153,7 +160,13 @@ class QQPlotDisplay:
     def from_predictions(cls, y_true: Any, y_pred: Any, *, ax: Any = None) -> Self:
         """実測値と予測値から残差を計算し、標準化してQ-Qプロットを描く。"""
         t, p = finite_pair(y_true, y_pred)
-        residuals = t - p
+        return cls.from_residuals(t - p, ax=ax)
+
+    @classmethod
+    def from_residuals(cls, residuals: Any, *, ax: Any = None) -> Self:
+        """残差（実測値 − 予測値）を標準化してQ-Qプロットを描く（欠損は除く）。"""
+        residuals = as_1d_float(residuals)
+        residuals = residuals[np.isfinite(residuals)]
         std = residuals.std(ddof=1)
         standardized = (residuals - residuals.mean()) / std if std > 0 else residuals * 0.0
         (theoretical, ordered), (_, _, r) = stats.probplot(standardized, dist="norm")

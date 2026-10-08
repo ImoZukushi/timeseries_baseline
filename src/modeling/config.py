@@ -7,7 +7,7 @@ YAMLの内容をpydanticモデルで検証し、型の誤り・未知のキー�
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -313,7 +313,12 @@ class EvaluationConfig(_StrictModel):
         training_history: 学習の推移（反復ごとの学習・検証の損失）を記録・描画するか。
         learning_curve: 学習曲線の設定。
         validation_curve: 検証曲線の設定。
-        max_series: 残差のACF/PACFを描く最大系列数（複数系列の場合）。
+        max_series: 残差の図（分布・Q-Q・ACF/PACF・時系列の残差診断）を描く最大系列数
+            （複数系列の場合）。検定の表は全系列について作る。
+        ljung_box_lags: 時系列の残差診断の Ljung-Box検定のラグ。Noneなら自動
+            （`min(10, n//5)` と、`forecast.seasonal_period` が点数の半分未満ならその周期）。
+        unit_root_regression: 単位根検定（ADF・KPSS）の確定項。`c`（定数）/ `ct`（定数＋トレンド）。
+        test_alpha: 検定の判定に使う有意水準。
     """
 
     enabled: bool = True
@@ -322,6 +327,9 @@ class EvaluationConfig(_StrictModel):
     learning_curve: LearningCurveConfig = Field(default_factory=LearningCurveConfig)
     validation_curve: ValidationCurveConfig = Field(default_factory=ValidationCurveConfig)
     max_series: int = Field(default=4, ge=1)
+    ljung_box_lags: list[Annotated[int, Field(ge=1)]] | None = None
+    unit_root_regression: Literal["c", "ct"] = "c"
+    test_alpha: float = Field(default=0.05, gt=0, lt=1)
 
 
 class ExperimentConfig(_StrictModel):
