@@ -29,6 +29,10 @@
        - 誤差評価（`modeling.evaluation`）: OOF予測の残差を系列ごとに診断する
          （残差分布・正規Q-Q・残差の自己相関（ACF/PACF）・残差プロット・Leverage/Cookの距離）。
          あわせて学習の推移・学習曲線（学習データ量）・検証曲線（learning_rate）も作る
+       - 時系列の残差診断（`evaluation.time_series_diagnostics`）: 系列ごとに、残差の推移と
+         検定（Ljung-Box: 自己相関、Jarque-Bera: 正規性、ADF＋KPSS: 定常性）をまとめる。
+         再帰予測の残差（誤差が蓄積するため自己相関があるのが自然）と、1日先予測の残差
+         （モデルの当てはまりの診断用）の両方で行う
     4. 2モデルのOOF予測から重みを最適化してアンサンブル（`modeling.ensemble.run_ensemble`）
     5. テスト期間の実測値と比べたMAE（変数別・全体）の表と、予測の比較図を保存
 
@@ -59,7 +63,8 @@ Usage:
     - `experiments/delhi_{lightgbm,xgboost}/{実行日時}/`: CVスコア・OOF/テスト予測・
       ステップ別スコア（horizon_scores）・SHAP・チューニング履歴
     - `experiments/delhi_{lightgbm,xgboost}/{実行日時}/evaluation/`: 誤差評価の図・表
-      （`residual_summary.csv` に全体と系列ごとの残差の要約）
+      （`residual_summary.csv` に全体と系列ごとの残差の要約、`residual_tests.csv` に検定の結果、
+      `residual_diagnostics__{recursive,onestep}__{変数}.png` に系列ごとの残差診断の図）
     - `ensembles/delhi_blend/{実行日時}/`: アンサンブルのスコア・重み・予測
     - `optuna/`: Optuna study（同じコマンドを再実行すると続きから探索する）
     - `tables/delhi_quickstart__test_mae.csv`: テスト期間のMAE（変数別・全体）
@@ -133,6 +138,8 @@ SEASONAL_PERIOD = 365
 LEARNING_CURVE_SIZES = [0.25, 0.5, 0.75, 1.0]
 # 検証曲線で動かす learning_rate の値（LightGBM・XGBoost共通のパラメータ名）
 VALIDATION_CURVE_LEARNING_RATES = [0.01, 0.03, 0.1, 0.3]
+# 残差診断の Ljung-Box検定のラグ（1週・2週先までの自己相関をまとめて検定する）
+LJUNG_BOX_LAGS = [7, 14]
 
 
 # --- データの読み込みと整形 ---------------------------------------------------------
@@ -331,6 +338,11 @@ def make_experiment_config(model: str, n_trials: int) -> ExperimentConfig:
                     "param": "learning_rate",
                     "values": VALIDATION_CURVE_LEARNING_RATES,
                 },
+                # 時系列の残差診断（時刻列があるので自動で作られる）。
+                # Ljung-Box検定のラグは1週・2週（既定は min(10, n//5)）
+                "ljung_box_lags": LJUNG_BOX_LAGS,
+                "unit_root_regression": "c",  # 単位根検定（ADF・KPSS）は定数項のみの式
+                "test_alpha": 0.05,  # 検定の判定に使う有意水準
             },
             "tracking": {"experiment_name": MLFLOW_EXPERIMENT},
         }
@@ -503,6 +515,24 @@ def main(argv: list[str] | None = None) -> None:
         summary = pl.read_csv(results[model].output_dir / "evaluation" / "residual_summary.csv")
         print("  誤差評価（OOF予測の残差 = 実測値 − 予測値）:")
         print(summary.select("series", "n", "mean", "std", "skewness", "excess_kurtosis", "mae"))
+        # 時系列の残差診断: 再帰予測（recursive）と1日先予測（onestep）の残差の検定結果。
+        # 再帰予測の残差は誤差が蓄積するため自己相関「あり」になるのが自然。モデルに取りこぼした
+        # 過去の情報が無いかは、1日先予測の残差の自己相関で判断する
+        tests = pl.read_csv(results[model].output_dir / "evaluation" / "residual_tests.csv")
+        print("  時系列の残差診断（p値: Ljung-Box=自己相関, Jarque-Bera=正規性, ADF/KPSS=定常性）:")
+        print(
+            tests.select(
+                "residual_type",
+                "series",
+                pl.col("ljung_box_p_value").alias("lb_p"),
+                pl.col("jarque_bera_p_value").alias("jb_p"),
+                pl.col("adf_p_value").alias("adf_p"),
+                pl.col("kpss_p_value").alias("kpss_p"),
+                "autocorrelation",
+                "normality",
+                "stationarity",
+            )
+        )
 
     # 4. アンサンブル（保存済みのOOF予測から重みを求め、テスト予測を加重平均する）
     ensemble_tracker: Tracker = (

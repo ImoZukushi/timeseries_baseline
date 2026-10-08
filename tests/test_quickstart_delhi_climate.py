@@ -88,6 +88,7 @@ def test_experiment_config_is_valid() -> None:
     assert config.evaluation.max_series == len(qs.TARGET_VARIABLES)
     assert config.evaluation.learning_curve.enabled
     assert config.evaluation.validation_curve.param == "learning_rate"
+    assert config.evaluation.ljung_box_lags == qs.LJUNG_BOX_LAGS
 
 
 def test_evaluate_on_test_per_variable_and_overall() -> None:
@@ -131,6 +132,18 @@ def test_quickstart_end_to_end(tmp_path: Path) -> None:
             "learning_curve.png",
             "validation_curve.png",
         } <= evaluation
+        # 時系列の残差診断（再帰予測と1日先予測の残差、系列ごと）
+        assert {
+            "residual_tests.csv",
+            "ljung_box.csv",
+            "residual_timeseries.png",
+            "residual_timeseries_onestep.png",
+        } <= evaluation
+        for kind in ("recursive", "onestep"):
+            for variable in qs.TARGET_VARIABLES:
+                assert f"residual_diagnostics__{kind}__{variable}.png" in evaluation
+        tests = pl.read_csv(run_dir / "evaluation" / "residual_tests.csv")
+        assert tests.height == 2 * len(qs.TARGET_VARIABLES)
         summary = pl.read_csv(run_dir / "evaluation" / "residual_summary.csv")
         assert summary["series"].to_list() == ["all", *sorted(qs.TARGET_VARIABLES)]
         # テスト予測は 114日 × 3変数
