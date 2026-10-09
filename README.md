@@ -1,6 +1,11 @@
 # ac2026
 EDA &amp; Baseline
 
+## ドキュメント
+
+- [src/ モジュールリファレンス](docs/modules/README.md): `util` / `eda` / `feature_engineering` / `modeling` / `evaluation` の仕様と使い方
+- [リポジトリ構成](docs/agent/repository-structure.md)
+
 ## 時系列ビューア
 
 `data/`・`outputs/` 以下の任意の時系列データ（CSV・Parquet・Excel）をブラウザで選び、

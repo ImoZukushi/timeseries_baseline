@@ -21,6 +21,7 @@
 | `outputs/optuna/` | Optuna studyのSQLite（gitignore対象） |
 | `mlruns/` | ローカルMLflowの実験ログ（gitignore対象） |
 | `docs/agent/` | エージェント向けプロジェクト文書 |
+| `docs/modules/` | `src/` 以下のモジュールの仕様と使い方（[docs/modules/README.md](../modules/README.md)） |
 | `.claude/skills/` | 作業別スキルファイル（Claude Code） |
 
 ## `src/` 配下のパッケージ
@@ -31,6 +32,9 @@
 | `src/eda/` | データ品質チェック・時系列EDA |
 | `src/feature_engineering/` | sklearn互換の特徴量エンジニアリングtransformer |
 | `src/modeling/` | モデル学習基盤（CV・モデル・チューニング・SHAP・実験ログ・アンサンブル） |
+| `src/evaluation/` | 誤差評価の可視化（残差・時系列の残差診断・分類・学習曲線・影響度・SHAPの相関） |
+
+各パッケージの仕様と使い方は [docs/modules/](../modules/README.md) を参照。
 
 ## モデリングの実行手順
 
