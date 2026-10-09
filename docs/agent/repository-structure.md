@@ -11,7 +11,7 @@
 | `scripts/` | 実行スクリプト |
 | `tests/` | pytest用テスト |
 | `model/` | 学習済みモデル |
-| `app/` | アプリケーション |
+| `app/` | アプリケーション（`app/timeseries_viewer/`: 時系列ビューア） |
 | `data/raw/` | 元データ（不変・gitignore対象） |
 | `data/external/` | 外部データ（不変・gitignore対象） |
 | `data/interim/` | 中間加工データ（gitignore対象） |
@@ -101,3 +101,23 @@ evaluation:
 
 新しいモデルは `src/modeling/models/` に `ModelSpec` を継承したクラスを追加し
 `@register_model` を付けると、YAMLの `model.name` で指定できるようになる。
+
+## 時系列ビューア（`app/timeseries_viewer/`）
+
+`data/`・`outputs/` 以下の CSV・Parquet・Excel から時系列を選び、最大5系列を縦に並べて表示する Streamlit アプリ。
+
+```bash
+uv run streamlit run app/timeseries_viewer/main.py
+```
+
+| モジュール | 役割 |
+|---|---|
+| `catalog.py` | ファイルの一覧（`discover_files`）と列の種類（時刻・数値・グループ列）の判定（`inspect_columns`） |
+| `storage.py` | ファイルを LazyFrame として開く（`open_table`）。CSV・Excel は初回に Parquet に変換して `data/interim/timeseries_viewer_cache/` にキャッシュし、元ファイルの更新日時・サイズが変わったら作り直す |
+| `series.py` | 系列の指定（`SeriesSpec`）、表示範囲の切り出しと最小・最大による間引き（`load_series`）、指定時刻に最も近い観測（`value_at`） |
+| `figure.py` | Plotly の図（横軸を共有して縦に並べ、全段をまたぐカーソルの縦線を引く） |
+| `main.py` | Streamlit の画面。`streamlit run` 用に `src/`・`app/` を import パスに加える |
+
+- `main.py` 以外は Streamlit に依存しないため、`tests/test_app_timeseries_viewer.py` で単体テストする（画面は `streamlit.testing` で起動のみ確認）。
+- 大容量CSVの変換には `util.csv_io.scan_csv_auto`（データ本体がASCIIのみの大容量ファイルを lazy に読む）を使い、全行をメモリに載せずに Parquet を書き出す。
+- 環境変数 `TIMESERIES_VIEWER_ROOTS`（探すディレクトリ。`os.pathsep` 区切り）・`TIMESERIES_VIEWER_CACHE_DIR`（キャッシュの保存先）で既定値を変えられる。

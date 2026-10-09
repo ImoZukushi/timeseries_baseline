@@ -10,6 +10,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "optuna>=5.0.0",
     "pandas>=3.0.6",
+    "plotly>=7.1.0",
     "polars>=1.44.2",
     "pyarrow>=25.0.1",
     "pydantic>=2.13.5",
@@ -19,6 +20,7 @@ dependencies = [
     "seaborn>=0.13.2",
     "shap>=0.52.0",
     "statsmodels>=0.15.0",
+    "streamlit>=1.65.0",
     "xgboost>=3.4.1",
 ]
 
@@ -50,7 +52,7 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 warn_unused_ignores = true
 no_implicit_optional = true
-mypy_path = "src"
+mypy_path = "src,app"
 
 [[tool.mypy.overrides]]
 module = "statsmodels.*"
@@ -63,9 +65,10 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "lightgbm.*", "xgboost.*", "shap.*", "mlflow.*", "optuna.*", "scipy.*", "skorch.*", "torch.*",
+    "plotly.*",
 ]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "scripts"]
+pythonpath = ["src", "scripts", "app"]

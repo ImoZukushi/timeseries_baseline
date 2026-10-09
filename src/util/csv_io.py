@@ -140,6 +140,67 @@ def _parse_datetime_like_columns(df: pl.DataFrame) -> pl.DataFrame:
     return df
 
 
+def _header_and_lazy_ok(path: Path) -> tuple[list[str], int] | None:
+    """lazy scanで読める大容量CSVなら (ヘッダ, ヘッダ行のバイト数) を返す（読めなければNone）。
+
+    条件: `LARGE_FILE_THRESHOLD_BYTES` を超え、ヘッダ行以降がASCII文字のみ
+    （ヘッダはUTF-8またはCP932でデコードする）。
+    """
+    if path.stat().st_size <= LARGE_FILE_THRESHOLD_BYTES:
+        return None
+    with path.open("rb") as f:
+        header_line = f.readline()
+    try:
+        header_text = header_line.decode("utf-8")
+    except UnicodeDecodeError:
+        header_text = header_line.decode("cp932", errors="replace")
+    if not _is_ascii_only_from(path, skip_bytes=len(header_line)):
+        return None
+    return header_text.lstrip("﻿").rstrip("\r\n").split(","), len(header_line)
+
+
+def scan_csv_auto(path: Path, datetime_sample_rows: int = 1000) -> pl.LazyFrame:
+    """CSVファイルを LazyFrame として読む（大容量ファイルは全行をメモリに載せない）。
+
+    大容量でデータ本体がASCII文字のみのCSV（本プロジェクトの `wind_*.csv` など）は
+    `pl.scan_csv` で遅延読み込みし、`sink_parquet` などで全行をメモリに載せずに処理できる。
+    日時列は先頭 `datetime_sample_rows` 行で書式を判定して変換する（`read_csv_auto` は列全体の
+    変換成功率で判定するため、判定の根拠となる行数だけが異なる）。それ以外のファイルは
+    `read_csv_auto(path).lazy()` と同じ。
+
+    Args:
+        path: 読み込むCSVファイルのパス。
+        datetime_sample_rows: 日時の書式の判定に使う先頭の行数（大容量ファイルのみ）。
+
+    Returns:
+        読み込んだLazyFrame。
+    """
+    header = _header_and_lazy_ok(path)
+    if header is None:
+        return read_csv_auto(path).lazy()
+    columns, _ = header
+    lf = pl.scan_csv(
+        path,
+        has_header=False,
+        skip_rows=1,
+        new_columns=columns,
+        encoding="utf8-lossy",
+        infer_schema_length=None,
+        null_values=NULL_VALUE_MARKERS,
+    )
+    # 文字列列のうち日時らしいものを、先頭のサンプルで書式を決めて変換する
+    sample = lf.head(datetime_sample_rows).collect()
+    conversions = []
+    for col in sample.columns:
+        if sample.schema[col] != pl.Utf8:
+            continue
+        non_null = sample[col].drop_nulls()
+        fmt = _find_datetime_format(non_null) if non_null.len() else None
+        if fmt is not None:
+            conversions.append(pl.col(col).str.to_datetime(format=fmt, strict=False))
+    return lf.with_columns(conversions) if conversions else lf
+
+
 def read_csv_auto(path: Path) -> pl.DataFrame:
     """CSVファイルをエンコーディング自動判定つきで読み込む。
 
