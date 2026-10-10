@@ -105,7 +105,9 @@ for t in range(1, 400):
 summary, ljung_box = residual_tests({"white": white, "ar1": ar1}, seasonal_period=7)
 print(summary.select("series", "ljung_box_p_value", "autocorrelation", "normality", "stationarity"))
 
-disp = TimeSeriesResidualDiagnosticsDisplay.from_residuals(ar1, seasonal_period=7, title="AR(1) の残差")
+disp = TimeSeriesResidualDiagnosticsDisplay.from_residuals(
+    ar1, seasonal_period=7, title="AR(1) の残差"
+)
 plt.close(disp.figure_)
 ```
 
@@ -145,7 +147,7 @@ from evaluation.classification import ConfusionMatrixDisplay, RocCurveDisplay
 rng = np.random.default_rng(0)
 y_true = rng.integers(0, 3, 300)
 proba = rng.dirichlet(np.ones(3), 300)
-proba[np.arange(300), y_true] += 0.5           # 正解クラスの確率を高めた疑似的な予測
+proba[np.arange(300), y_true] += 0.5  # 正解クラスの確率を高めた疑似的な予測
 proba /= proba.sum(axis=1, keepdims=True)
 
 for disp in (
@@ -187,7 +189,7 @@ for disp in (
 from evaluation.shap_correlation import ShapDependenceDisplay
 
 disp = ShapDependenceDisplay.from_shap(
-    shap_result.values,                                       # (n, 特徴量数)
+    shap_result.values,  # (n, 特徴量数)
     shap_result.data.to_numpy(dtype=float, na_value=float("nan")),
     shap_result.feature_names,
 )

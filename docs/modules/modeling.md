@@ -98,7 +98,10 @@ config = ExperimentConfig.model_validate(
         "task": "regression",
         "data": {"train_path": "unused.csv", "target": "y", "id_col": "id"},
         "features": [
-            {"class": "feature_engineering.categorical.PolarsOrdinalEncoder", "params": {"variables": ["cat"]}}
+            {
+                "class": "feature_engineering.categorical.PolarsOrdinalEncoder",
+                "params": {"variables": ["cat"]},
+            }
         ],
         "cv": {"method": "kfold", "n_splits": 3},
         "model": {"name": "lightgbm", "params": {"n_estimators": 200}, "early_stopping_rounds": 20},
@@ -107,9 +110,11 @@ config = ExperimentConfig.model_validate(
     }
 )
 dataset = prepare_dataset(config, train)
-result = run_experiment(config, dataset, tracker=NullTracker(), output_root=outputs_dir() / "experiments")
+result = run_experiment(
+    config, dataset, tracker=NullTracker(), output_root=outputs_dir() / "experiments"
+)
 print(result.cv_result.oof_scores)  # {'rmse': ..., 'mae': ...}
-print(result.output_dir)            # outputs/experiments/doc_example_lgbm/{日時}/
+print(result.output_dir)  # outputs/experiments/doc_example_lgbm/{日時}/
 ```
 
 YAML のファイルから読むときは、`load_experiment_config(path)` と `load_dataset(config)` を使います（`data.train_path` / `test_path` を読む）。
@@ -332,7 +337,11 @@ class RandomForestSpec(ModelSpec):
     explainer_kind = "tree"  # SHAP は TreeExplainer を使う
 
     def build(
-        self, task: Task, params: dict[str, Any], seed: int, early_stopping_rounds: int | None = None
+        self,
+        task: Task,
+        params: dict[str, Any],
+        seed: int,
+        early_stopping_rounds: int | None = None,
     ) -> BaseEstimator:
         merged = merge_params({"random_state": seed, "n_jobs": -1}, params)
         cls = RandomForestClassifier if is_classification(task) else RandomForestRegressor

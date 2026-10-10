@@ -35,7 +35,9 @@ from feature_engineering.time_series import LagFeatureGenerator
 
 train = pl.DataFrame(
     {
-        "date": pl.datetime_range(pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 10), "1d", eager=True),
+        "date": pl.datetime_range(
+            pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 10), "1d", eager=True
+        ),
         "store": ["a", "b"] * 5,
         "sales": [float(v) for v in range(10)],
     }
