@@ -11,7 +11,7 @@
 | `scripts/` | 実行スクリプト |
 | `tests/` | pytest用テスト |
 | `model/` | 学習済みモデル |
-| `app/` | アプリケーション（`app/timeseries_viewer/`: 時系列ビューア） |
+| `app/` | アプリケーション（`app/timeseries_viewer/`: 時系列ビューア、`app/image_gallery/`: 画像ギャラリー） |
 | `data/raw/` | 元データ（不変・gitignore対象） |
 | `data/external/` | 外部データ（不変・gitignore対象） |
 | `data/interim/` | 中間加工データ（gitignore対象） |
@@ -125,3 +125,20 @@ uv run streamlit run app/timeseries_viewer/main.py
 - `main.py` 以外は Streamlit に依存しないため、`tests/test_app_timeseries_viewer.py` で単体テストする（画面は `streamlit.testing` で起動のみ確認）。
 - 大容量CSVの変換には `util.csv_io.scan_csv_auto`（データ本体がASCIIのみの大容量ファイルを lazy に読む）を使い、全行をメモリに載せずに Parquet を書き出す。
 - 環境変数 `TIMESERIES_VIEWER_ROOTS`（探すディレクトリ。`os.pathsep` 区切り）・`TIMESERIES_VIEWER_CACHE_DIR`（キャッシュの保存先）で既定値を変えられる。
+
+## 画像ギャラリー（`app/image_gallery/`）
+
+指定したディレクトリ内の画像ファイルを一覧表示する Streamlit アプリ。
+
+```bash
+uv run streamlit run app/image_gallery/main.py
+```
+
+| モジュール | 役割 |
+|---|---|
+| `catalog.py` | 画像を含むディレクトリの探索（`find_image_directories`。`.venv`・`.git` などは除外）、画像の一覧（`list_images`）・絞り込み（`filter_images`。部分一致・ワイルドカード・拡張子）・並べ替え（`sort_images`）・ページ分割（`paginate`） |
+| `thumbnails.py` | サムネイル（長辺を縮小した PNG。EXIF の向きを反映）と画像の情報（画素数・形式・フレーム数）。SVG・読めない画像は None |
+| `main.py` | Streamlit の画面（サムネイルの格子と、`st.dialog` による拡大表示・ダウンロード） |
+
+- `main.py` 以外は Streamlit に依存しないため、`tests/test_app_image_gallery.py` で単体テストする。
+- 環境変数 `IMAGE_GALLERY_ROOTS`（`os.pathsep` 区切り）で探すディレクトリを変えられる（既定はリポジトリのルート）。
