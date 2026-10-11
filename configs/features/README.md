@@ -37,5 +37,6 @@ features:
 | `categorical_target` | 出現の少ない列車番号を `Other` にまとめてから、列車番号・停車駅名をターゲットエンコーディング |
 | `date_parts` | 年月日から月・日・曜日を作り、年月日を削除する（使う実験では `data.drop_cols` から `年月日` を外す） |
 
+ほかの設定ディレクトリとの関係は [configs/README.md](../README.md) を参照してください。
 使える transformer は [docs/modules/feature_engineering.md](../../docs/modules/feature_engineering.md) を参照してください。
 探索の進め方・レシピ・詳しい仕様は [docs/guides/feature_exploration.md](../../docs/guides/feature_exploration.md) にあります。
