@@ -18,6 +18,7 @@
 | `data/raw/` | 元データ（不変・gitignore対象） |
 | `data/external/` | 外部データ（不変・gitignore対象） |
 | `data/interim/` | 中間加工データ（gitignore対象） |
+| `data/synthetic/` | スクリプトで生成したダミーデータ（gitignore対象。`scripts/generate_synthetic_heat_exchanger.py`、[データカタログ](data-catalog.md)） |
 | `data/processed/` | 最終加工データ（gitignore対象） |
 | `outputs/` | グラフ・集計テーブル・レポート |
 | `outputs/experiments/`, `outputs/ensembles/` | 実験・アンサンブルの予測とスコア（gitignore対象） |
@@ -46,6 +47,9 @@
 Pythonから使う例は `scripts/quickstart_delhi_climate.py`（QuickStart）を参照。
 同じ内容をセルごとに解説付きで実行できるノートブック版は `notebook/001_quickstart_delhi_climate.ipynb`。
 同じデータのEDA（`src/eda` の使い方の例）は `scripts/eda_delhi_climate.py` / `notebook/002_eda_delhi_climate.ipynb`。
+熱交換器のダミーデータ（`data/raw/dummy/`、横持ち・複数機器）のEDAは `scripts/eda_heat_exchanger_dummy.py` / `notebook/003_eda_heat_exchanger_dummy.ipynb`。
+その前処理（クリーニング・洗浄の推定・特徴量 → `data/processed/dummy/{train,test}_dataset.parquet`）は
+`scripts/preprocess_heat_exchanger_dummy.py` / `notebook/004_preprocess_heat_exchanger_dummy.ipynb`。
 
 ```bash
 # 実験（CV学習・予測・SHAP・MLflow記録）
