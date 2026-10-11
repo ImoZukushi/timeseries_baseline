@@ -85,6 +85,8 @@ def _is_ascii_only_from(path: Path, skip_bytes: int, chunk_size: int = 8 * 1024 
 # 日時らしくない文字列（地名など）に対して稀に内部でクラッシュする挙動が
 # 確認されたため使用せず、固定の書式候補に対して厳密一致のみ試す。
 _DATETIME_FORMATS = (
+    # ISO 8601（polars の write_csv が日時列を書き出す形式。小数秒の有無どちらにも一致する）
+    "%Y-%m-%dT%H:%M:%S%.f",
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%d",
     "%Y/%m/%d %H:%M:%S",

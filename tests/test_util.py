@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -137,3 +138,16 @@ def test_read_csv_auto_parses_datetime_like_columns(tmp_path: Path) -> None:
     _write_utf8(path, "ts,value\n2020-01-01 00:00:00,1\n2020-01-02 00:00:00,2\n")
     df = csv_io.read_csv_auto(path)
     assert df.schema["ts"] == pl.Datetime
+
+
+def test_read_csv_auto_parses_iso_datetime_written_by_polars(tmp_path: Path) -> None:
+    # polars の write_csv は日時列を `2016-01-19T00:00:00.000000` の形で書き出す
+    path = tmp_path / "iso.csv"
+    original = pl.DataFrame(
+        {"ts": [dt.datetime(2016, 1, 19), dt.datetime(2016, 1, 20, 12, 30, 15)], "v": [1, 2]}
+    )
+    original.write_csv(path)
+    assert "T" in path.read_text(encoding="utf-8")
+    df = csv_io.read_csv_auto(path)
+    assert df.schema["ts"] == pl.Datetime
+    assert df["ts"].to_list() == original["ts"].to_list()
