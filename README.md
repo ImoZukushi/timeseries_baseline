@@ -5,6 +5,7 @@ EDA &amp; Baseline
 
 - [src/ モジュールリファレンス](docs/modules/README.md): `util` / `eda` / `feature_engineering` / `modeling` / `evaluation` の仕様と使い方
 - [特徴量の探索（設定の継承・特徴量ブロック）](docs/guides/feature_exploration.md): YAML を差分だけで書いて特徴量のパターンを比べる方法と、その仕様
+- [特徴量の探索（グループ・アブレーション）](docs/guides/feature_search.md): 特徴量をグループに分け、組み合わせとアブレーションを `scripts/run_feature_search.py` で一括比較する方法と、その仕様
 - [ハイパーパラメータの探索とアンサンブル](docs/guides/hyperparameter_tuning.md): 各モデルを Optuna で探索し、アンサンブルまでを `scripts/run_pipeline.py` で自動化する方法と、その仕様
 - [リポジトリ構成](docs/agent/repository-structure.md)
 

@@ -1,0 +1,91 @@
+# 熱交換器ダミーデータ（前処理済み）で、LightGBM 単一モデルの特徴量の組み合わせを比べる探索の設定。
+#
+# 実行:
+#   uv run python scripts/preprocess_heat_exchanger_dummy.py          # データセットを作る（初回）
+#   uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
+#
+# 列の意味は docs/agent/data-catalog.md の「前処理済みデータセット」を参照。
+name: hx_dummy_fe
+experiment: hx_dummy/experiment.yaml   # 共通の実験設定（このファイルからの相対パス）
+
+# 特徴量グループ: 一緒に足し引きする列（と、そのとき Pipeline に加えるステップ）
+groups:
+  unit_calendar: [機器番号, 月]
+  sensors: [入口圧力, 出口圧力, 高温側流量, 低温側流量]
+  crude_ratio: [原油A比率, 原油B比率, 原油C比率]
+  chemical_type:
+    description: 薬剤種類（文字列なので整数に置き換える）
+    columns: [薬剤種類]
+    features: [{use: hx_chemical_ordinal}]
+  pressure_drop: [圧力損失, 圧力損失_ma_7]
+  crude_props: [加重アスファルテン分, 加重硫黄分, 加重API比重]
+  chemical_props: [薬剤有効成分濃度, 薬剤ph, 薬剤比重, 薬剤溶解性]
+  cleaning_cycle:
+    - 洗浄回数
+    - 洗浄後日数
+    - 洗浄後運転日数
+    - 洗浄後累積加重アスファルテン分
+    - 洗浄後薬剤なし日数
+    - 洗浄後薬剤なし割合
+  pressure_rise: [洗浄直後圧力損失, 圧力損失上昇率]
+  quality_flags:
+    description: クリーニング（外れ値の除去・補間）の印
+    columns:
+      - 入口圧力_外れ値
+      - 出口圧力_外れ値
+      - 高温側流量_外れ値
+      - 低温側流量_外れ値
+      - 入口圧力_補間
+      - 出口圧力_補間
+      - 高温側流量_補間
+      - 低温側流量_補間
+      - 原油比率_補間
+  pressure_lags:
+    description: 圧力損失のラグ・長めの移動平均（CV の中で機器ごとに作る）
+    columns: [機器番号, 圧力損失]
+    features: [{use: hx_pressure_drop_lags}]
+
+# 比べるパターン。元データの列だけのベースラインから、前処理で作った特徴量を1グループずつ足していく
+patterns:
+  - name: 01_raw
+    description: 元データの列だけ（ベースライン）
+    groups: [unit_calendar, sensors, crude_ratio, chemical_type]
+  - name: 02_pressure_drop
+    groups: [unit_calendar, sensors, crude_ratio, chemical_type, pressure_drop]
+  - name: 03_crude_props
+    groups: [unit_calendar, sensors, crude_ratio, chemical_type, pressure_drop, crude_props]
+  - name: 04_chemical_props
+    groups:
+      [unit_calendar, sensors, crude_ratio, chemical_type, pressure_drop, crude_props,
+       chemical_props]
+  - name: 05_cleaning_cycle
+    groups:
+      [unit_calendar, sensors, crude_ratio, chemical_type, pressure_drop, crude_props,
+       chemical_props, cleaning_cycle]
+  - name: 06_pressure_rise
+    groups:
+      [unit_calendar, sensors, crude_ratio, chemical_type, pressure_drop, crude_props,
+       chemical_props, cleaning_cycle, pressure_rise]
+  - name: 07_all_preprocessed
+    description: 前処理済みデータセットの全列（印の列を含む）
+    groups:
+      [unit_calendar, sensors, crude_ratio, chemical_type, pressure_drop, crude_props,
+       chemical_props, cleaning_cycle, pressure_rise, quality_flags]
+  - name: 08_all_with_lags
+    description: 全列 ＋ CV の中で作る圧力損失のラグ
+    groups: ["*"]
+  - name: 09_compact
+    description: 効きそうなグループだけの小さな組み合わせ
+    groups: [unit_calendar, pressure_drop, cleaning_cycle, pressure_rise]
+  - name: 10_compact_slow_lr
+    description: 09 と同じ特徴量で、学習率を下げる（overrides の例）
+    groups: [unit_calendar, pressure_drop, cleaning_cycle, pressure_rise]
+    overrides:
+      model: {params: {learning_rate: 0.02}}
+
+baseline: 01_raw
+
+# 07 から各グループを1つずつ外して、どのグループが効いているかを見る
+ablation:
+  pattern: 07_all_preprocessed
+  keep: [unit_calendar]   # 機器の識別子と月は常に残す

@@ -5,6 +5,8 @@
 - **[使い方](#使い方)**: 探索の流れ・よくある書き方（レシピ）・結果の比較。
 - **[設計仕様](#設計仕様)**: 展開の正確な規則・エラー・制約。
 
+特徴量を列のグループに分けて、組み合わせやアブレーションを一括で比べたい場合は [feature_search.md](feature_search.md) を使います。
+
 関連: [modeling.md](../modules/modeling.md)（実験設定の全項目）／ [feature_engineering.md](../modules/feature_engineering.md)（使える transformer）／ [configs/features/README.md](../../configs/features/README.md)（ブロックの一覧）
 
 ## なぜ必要か

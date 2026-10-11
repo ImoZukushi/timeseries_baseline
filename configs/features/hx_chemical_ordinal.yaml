@@ -1,0 +1,5 @@
+# 熱交換器ダミーデータ: 薬剤種類（なし / タイプA / タイプB）を整数に置き換える
+description: 薬剤種類の序数エンコーディング（熱交換器ダミーデータ）
+steps:
+  - class: feature_engineering.categorical.PolarsOrdinalEncoder
+    params: {variables: [薬剤種類]}

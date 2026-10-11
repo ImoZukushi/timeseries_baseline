@@ -728,3 +728,178 @@ def load_pipeline_config(path: Path) -> TuningPipelineConfig:
         pydantic.ValidationError: 設定内容が不正な場合。
     """
     return TuningPipelineConfig.model_validate(load_config_dict(path))
+
+
+# --- 特徴量の探索（feature search） ---------------------------------------------------
+
+# パターンの groups でこの値を書くと、定義済みの全グループ（定義順）に展開する
+ALL_GROUPS = "*"
+
+
+class FeatureGroupConfig(_StrictModel):
+    """特徴量グループ（一緒に足し引きする列と、それに伴う特徴量ステップ）。
+
+    YAMLでは列のリストだけを書く省略形（`sensors: [入口圧力, 出口圧力]`）も使える。
+
+    Attributes:
+        columns: 特徴量として使う列（`data.feature_cols` に加わる）。
+        features: このグループを使うときに Pipeline に加える特徴量ステップ
+            （エンコーディングなど。`use` でブロックも呼べる）。
+        description: 説明（任意）。
+    """
+
+    columns: list[str] = Field(default_factory=list)
+    features: list[FeatureStepConfig] = Field(default_factory=list)
+    description: str | None = None
+
+    @model_validator(mode="after")
+    def _check_not_empty(self) -> FeatureGroupConfig:
+        if not self.columns and not self.features:
+            raise ValueError("特徴量グループには columns か features の少なくとも一方が必要です")
+        return self
+
+
+class FeaturePatternConfig(_StrictModel):
+    """比較する1パターン（使う特徴量グループの組み合わせ）。
+
+    Attributes:
+        name: パターン名（出力ディレクトリ名・MLflowのrun名に使う）。
+        groups: 使う特徴量グループ名（`"*"` は全グループ）。列とステップはこの順に並ぶ。
+        features: このパターンだけで加える特徴量ステップ（グループのステップの後に入る）。
+        overrides: 共通の実験設定への上書き（例: `{model: {params: {learning_rate: 0.03}}}`）。
+            データ・CV・指標は比較の前提なので変えられない。
+        description: 説明（任意）。
+    """
+
+    name: str = Field(pattern=r"^[\w.\-+]+$")
+    groups: list[str] = Field(min_length=1)
+    features: list[FeatureStepConfig] = Field(default_factory=list)
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    description: str | None = None
+
+
+class FeatureAblationConfig(_StrictModel):
+    """アブレーション（あるパターンから特徴量グループを1つずつ外して比べる）の設定。
+
+    Attributes:
+        pattern: 土台のパターン名（Noneなら行わない）。
+        keep: 外さないグループ（機器の識別子など、常に必要なもの）。
+    """
+
+    pattern: str | None = None
+    keep: list[str] = Field(default_factory=list)
+
+
+class FeatureSearchConfig(_StrictModel):
+    """特徴量の探索（単一モデルで特徴量の組み合わせを比べる）の設定。
+
+    Attributes:
+        name: 探索名（出力ディレクトリ名、MLflowの既定の実験名）。
+        experiment: 共通の実験設定（`ExperimentConfig` から `name` を除いたもの）。
+            YAMLではパスで指定し（探索のYAMLからの相対パス。`base`・`use` も展開される）、
+            読み込み時に dict になる。`data.feature_cols` は各パターンのグループから決まる。
+        groups: 特徴量グループ名 → 定義。
+        patterns: 比較するパターン。
+        baseline: 差を測る基準のパターン名（Noneなら `patterns` の先頭）。
+        ablation: アブレーションの設定。
+    """
+
+    name: str = Field(pattern=r"^[\w.\-+]+$")
+    experiment: dict[str, Any]
+    groups: dict[str, FeatureGroupConfig] = Field(min_length=1)
+    patterns: list[FeaturePatternConfig] = Field(min_length=1)
+    baseline: str | None = None
+    ablation: FeatureAblationConfig = Field(default_factory=FeatureAblationConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_group_shorthand(cls, data: Any) -> Any:
+        # グループの省略形（列のリストだけ）を {columns: [...]} にする
+        if isinstance(data, dict) and isinstance(data.get("groups"), dict):
+            data = dict(data)
+            data["groups"] = {
+                name: {"columns": value} if isinstance(value, list) else value
+                for name, value in data["groups"].items()
+            }
+        return data
+
+    @model_validator(mode="after")
+    def _check_references(self) -> FeatureSearchConfig:
+        if ALL_GROUPS in self.groups:
+            raise ValueError(f"グループ名に {ALL_GROUPS!r} は使えません")
+        names = [p.name for p in self.patterns]
+        duplicated = sorted({n for n in names if names.count(n) > 1})
+        if duplicated:
+            raise ValueError(f"パターン名が重複しています: {duplicated}")
+        for pattern in self.patterns:
+            unknown = [g for g in pattern.groups if g != ALL_GROUPS and g not in self.groups]
+            if unknown:
+                raise ValueError(f"パターン {pattern.name}: 未定義のグループ {unknown}")
+        if self.baseline is not None and self.baseline not in names:
+            raise ValueError(f"baseline のパターン {self.baseline} がありません")
+        if self.ablation.pattern is not None and self.ablation.pattern not in names:
+            raise ValueError(f"ablation.pattern のパターン {self.ablation.pattern} がありません")
+        unknown_keep = [g for g in self.ablation.keep if g not in self.groups]
+        if unknown_keep:
+            raise ValueError(f"ablation.keep に未定義のグループ {unknown_keep}")
+        if "name" in self.experiment:
+            raise ValueError("experiment に name は書かないでください（パターンごとに決まります）")
+        return self
+
+    @property
+    def baseline_pattern(self) -> str:
+        """差を測る基準のパターン名。"""
+        return self.baseline or self.patterns[0].name
+
+    def pattern_groups(self, pattern: FeaturePatternConfig) -> list[str]:
+        """パターンが使うグループ名（`"*"` を展開し、重複を除いて指定順に並べる）。"""
+        expanded: list[str] = []
+        for group in pattern.groups:
+            for name in self.groups if group == ALL_GROUPS else [group]:
+                if name not in expanded:
+                    expanded.append(name)
+        return expanded
+
+
+def load_feature_search_config(
+    path: Path, feature_blocks_dir: Path | None = None
+) -> FeatureSearchConfig:
+    """特徴量の探索のYAMLを読み込んで検証する。
+
+    - 探索のYAML自体も `base` で継承できる。
+    - `experiment` のパスは探索のYAMLからの相対パスで解決し、`base`・`use` を展開した dict にする。
+    - グループ・パターンの `features` にある `use` は、探索のYAMLを基準に展開する。
+
+    Args:
+        path: 探索のYAMLのパス。
+        feature_blocks_dir: 特徴量ブロックの置き場所（Noneなら `configs/features/`）。
+
+    Returns:
+        検証済みの設定。
+
+    Raises:
+        ValueError: ファイルが無い、`base`・`use` の展開に失敗した、または書式が誤っている場合。
+        pydantic.ValidationError: 設定内容が不正な場合。
+    """
+    path = Path(path).resolve()
+    blocks_dir = feature_blocks_dir or default_feature_blocks_dir()
+    raw = load_config_dict(path, blocks_dir)
+    experiment = raw.get("experiment")
+    if isinstance(experiment, str):
+        experiment_path = Path(experiment)
+        if not experiment_path.is_absolute():
+            experiment_path = path.parent / experiment_path
+        raw["experiment"] = load_config_dict(experiment_path, blocks_dir)
+    elif isinstance(experiment, dict) and "features" in experiment:
+        experiment["features"] = _expand_feature_blocks(experiment["features"], path, blocks_dir)
+    groups = raw.get("groups")
+    if isinstance(groups, dict):
+        for value in groups.values():
+            if isinstance(value, dict) and "features" in value:
+                value["features"] = _expand_feature_blocks(value["features"], path, blocks_dir)
+    patterns = raw.get("patterns")
+    if isinstance(patterns, list):
+        for pattern in patterns:
+            if isinstance(pattern, dict) and "features" in pattern:
+                pattern["features"] = _expand_feature_blocks(pattern["features"], path, blocks_dir)
+    return FeatureSearchConfig.model_validate(raw)

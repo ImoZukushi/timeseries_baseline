@@ -9,6 +9,7 @@
 | `configs/features/` | 実験設定の `features` から `use: <名前>` で呼び出す特徴量ブロック（[README](../../configs/features/README.md)） |
 | `configs/ensembles/` | アンサンブルの設定YAML（`scripts/run_ensemble.py` 用） |
 | `configs/pipelines/` | 探索 → 学習 → アンサンブルを一括実行するパイプライン設定と、その構成モデルの実験設定（`scripts/run_pipeline.py` 用） |
+| `configs/feature_search/` | 単一モデルで特徴量のグループの組み合わせを比べる探索の設定（`scripts/run_feature_search.py` 用。[README](../../configs/feature_search/README.md)） |
 | `configs/search_spaces/` | モデルごとの Optuna の探索範囲（実験設定から `base` で継承） |
 | `notebook/` | 探索・分析用Jupyter Notebook |
 | `scripts/` | 実行スクリプト |
@@ -50,6 +51,7 @@ Pythonから使う例は `scripts/quickstart_delhi_climate.py`（QuickStart）�
 熱交換器のダミーデータ（`data/raw/dummy/`、横持ち・複数機器）のEDAは `scripts/eda_heat_exchanger_dummy.py` / `notebook/003_eda_heat_exchanger_dummy.ipynb`。
 その前処理（クリーニング・洗浄の推定・特徴量 → `data/processed/dummy/{train,test}_dataset.parquet`）は
 `scripts/preprocess_heat_exchanger_dummy.py` / `notebook/004_preprocess_heat_exchanger_dummy.ipynb`。
+前処理済みデータセットでの特徴量の探索（LightGBM）は `scripts/run_feature_search.py` / `notebook/005_feature_search_heat_exchanger_dummy.ipynb`。
 
 ```bash
 # 実験（CV学習・予測・SHAP・MLflow記録）
@@ -60,6 +62,8 @@ uv run python scripts/run_experiment.py --config configs/experiments/example_lgb
 uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.yaml
 # 各モデルの探索 → 学習 → アンサンブルの一括実行（docs/guides/hyperparameter_tuning.md）
 uv run python scripts/run_pipeline.py --config configs/pipelines/example_ensemble.yaml
+# 特徴量の探索（グループの組み合わせ・アブレーションを LightGBM で比べる）
+uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
 # 実験ログの閲覧
 uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
 # NN（mlp / cnn1d）を使う場合は任意依存を入れる

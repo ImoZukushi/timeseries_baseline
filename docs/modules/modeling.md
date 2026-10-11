@@ -41,6 +41,7 @@ YAML ──load_experiment_config──▶ ExperimentConfig（pydantic で検証
 | `trainer` | CV学習ループ（`run_cv`）と結果 `CVResult` |
 | `forecasting` | 再帰的多段予測・再帰バックテスト・目的変数の変換 |
 | `tuning` | Optuna によるチューニング（試行回数は study 全体の目標、study は設定の指紋で分ける） |
+| `feature_search` | 特徴量のグループの組み合わせ・アブレーションの一括比較（`scripts/run_feature_search.py`。[ガイド](../guides/feature_search.md)） |
 | `tuning_pipeline` | 複数モデルの探索 → 学習 → アンサンブルの一括実行（`scripts/run_pipeline.py`） |
 | `explain` | OOF SHAP |
 | `evaluation` | CV結果から誤差評価の図・表を作る（部品は `src/evaluation`） |
@@ -62,6 +63,9 @@ uv run python scripts/run_experiment.py --config configs/experiments/example_lgb
 
 # アンサンブル（構成要素の実験を実行した後に）
 uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.yaml
+
+# 特徴量の探索（グループの組み合わせ・アブレーションを単一モデルで比べる）
+uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
 
 # 実験ログの閲覧
 uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db

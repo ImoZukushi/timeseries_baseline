@@ -8,6 +8,7 @@
 | [experiments/](experiments/README.md) | 1つのモデルの実験設定（データ・特徴量・CV・モデル・指標） | `scripts/run_experiment.py` |
 | [ensembles/](ensembles/README.md) | 実行済みの実験の予測を組み合わせるアンサンブル設定 | `scripts/run_ensemble.py` |
 | [pipelines/](pipelines/README.md) | 複数モデルの探索 → 学習 → アンサンブルを一括で行う設定 | `scripts/run_pipeline.py` |
+| [feature_search/](feature_search/README.md) | 単一モデルで特徴量のグループの組み合わせを比べる探索の設定 | `scripts/run_feature_search.py` |
 | [features/](features/README.md) | 実験設定から `use:` で呼び出す特徴量ブロック | （実験設定から参照） |
 | [search_spaces/](search_spaces/README.md) | モデルごとの Optuna の探索範囲 | （実験設定から `base:` で継承） |
 
@@ -17,6 +18,8 @@
 pipelines/<名前>.yaml ──members──▶ 実験設定 ──base──▶ 共通設定・search_spaces/<モデル>.yaml
                                       └──use──▶ features/<ブロック>.yaml
 experiments/<名前>.yaml ──base──▶ 共通の実験設定（例: fe_base.yaml）
+feature_search/<名前>.yaml ──experiment──▶ 共通の実験設定 ──base──▶ ...
+                          └──groups[].features の use──▶ features/<ブロック>.yaml
 ensembles/<名前>.yaml ──members──▶ 実行済みの実験の出力（outputs/experiments/）
 ```
 
@@ -36,6 +39,7 @@ uv run python -c "import sys, yaml; sys.path.insert(0, 'src'); from pathlib impo
 
 - [docs/modules/modeling.md](../docs/modules/modeling.md): 実験・アンサンブル設定の全項目
 - [docs/guides/feature_exploration.md](../docs/guides/feature_exploration.md): `base` / `use` の仕様と、特徴量の探索の進め方
+- [docs/guides/feature_search.md](../docs/guides/feature_search.md): 特徴量のグループ・パターン・アブレーションによる探索
 - [docs/guides/hyperparameter_tuning.md](../docs/guides/hyperparameter_tuning.md): 探索範囲・パイプラインの仕様と使い方
 
 ## 注意

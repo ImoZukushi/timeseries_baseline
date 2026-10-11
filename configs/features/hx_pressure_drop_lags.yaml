@@ -1,0 +1,9 @@
+# 熱交換器ダミーデータ: 圧力損失の過去の値と長めの移動平均（機器ごと）。
+# 行は日付順に並ぶため（data.time_col）、機器番号ごとにずらすと「その機器の前の行」になる。
+# 学習データは停止日・目的変数の欠測日を除いているので、1行前が前日とは限らない。
+description: 圧力損失のラグ（1・7・14行前）と30行の移動平均（機器ごと。熱交換器ダミーデータ）
+steps:
+  - class: feature_engineering.time_series.LagFeatureGenerator
+    params: {variables: [圧力損失], lags: [1, 7, 14], group_by: 機器番号}
+  - class: feature_engineering.time_series.MovingAverageTransformer
+    params: {variables: [圧力損失], window: 30, min_periods: 10, group_by: 機器番号}

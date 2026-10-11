@@ -35,6 +35,8 @@ features:
 |---|---|
 | `categorical_ordinal` | 列車番号・停車駅名の序数エンコーディング |
 | `categorical_target` | 出現の少ない列車番号を `Other` にまとめてから、列車番号・停車駅名をターゲットエンコーディング |
+| `hx_chemical_ordinal` | 熱交換器ダミーデータ: 薬剤種類の序数エンコーディング（`configs/feature_search/hx_dummy.yaml` で使用） |
+| `hx_pressure_drop_lags` | 熱交換器ダミーデータ: 圧力損失のラグ（1・7・14行前）と30行の移動平均（機器番号ごと） |
 | `date_parts` | 年月日から月・日・曜日を作り、年月日を削除する（使う実験では `data.drop_cols` から `年月日` を外す） |
 
 ほかの設定ディレクトリとの関係は [configs/README.md](../README.md) を参照してください。
