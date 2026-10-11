@@ -1,0 +1,10 @@
+# ベースラインに日付の成分（月・日・曜日）を加える。
+# data は再帰的にマージされるため、drop_cols だけを上書きすれば train_path などは base のまま。
+# リストは置き換えなので、features には base の分（categorical_ordinal）も書く。
+base: fe_base.yaml
+name: fe_date_parts
+data:
+  drop_cols: [発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]
+features:
+  - use: categorical_ordinal
+  - use: date_parts

@@ -1,0 +1,8 @@
+# 日付（年月日）から月・日・曜日を取り出し、日付そのものは削除する。
+# 使う実験では data.drop_cols から 年月日 を外すこと（外さないと Pipeline に届かない）。
+description: 年月日から月・日・曜日を作る
+steps:
+  - class: feature_engineering.datetime_features.DatetimeFeaturesExtractor
+    params: {variables: [年月日], components: [month, day, weekday]}
+  - class: modeling.pipeline.DropColumns
+    params: {columns: [年月日]}

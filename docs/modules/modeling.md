@@ -31,7 +31,7 @@ YAML ──load_experiment_config──▶ ExperimentConfig（pydantic で検証
 
 | モジュール | 内容 |
 |---|---|
-| `config` | 設定のスキーマ（`ExperimentConfig` / `EnsembleConfig`）と YAML の読み込み |
+| `config` | 設定のスキーマ（`ExperimentConfig` / `EnsembleConfig`）と YAML の読み込み（`base` の継承・特徴量ブロック `use` の展開） |
 | `tasks` | タスクの種類（`Task`）・目的変数のエンコード・予測値の取り出し |
 | `metrics` | 評価指標のレジストリ |
 | `cv` | CV分割（`make_folds`・日時カットオフの `TimeCutoffSplit`） |
@@ -278,6 +278,68 @@ forecast:
 前提:
 - 各系列の行は一定間隔（1行=1ステップ）であること。
 - テストデータの外生変数は、予測時点で既知であること。
+
+## 設定の継承と特徴量ブロック（特徴量の探索）
+
+特徴量をいろいろなパターンで試すとき、共通部分（データ・CV・モデル・指標）を写さずに差分だけを書けます。
+ここでは概要だけを示します。詳しい仕様（展開の手順・マージの規則・エラー・制約）とレシピは [docs/guides/feature_exploration.md](../guides/feature_exploration.md) を参照してください。
+YAML の読み込み（`load_experiment_config` / `load_ensemble_config` → `load_config_dict`）で、検証の前に次の2つを展開します。
+
+### `base`（設定の継承）
+
+`base` に書いた YAML を土台にして、書いたキーだけを上書きします。
+
+```yaml
+# configs/experiments/fe_target_encoding.yaml
+base: fe_base.yaml          # この YAML からの相対パス
+name: fe_target_encoding    # 出力ディレクトリ・MLflow の run 名になるので、パターンごとに変える
+features:
+  - use: categorical_target
+```
+
+| 書き方 | 結果 |
+|---|---|
+| dict（`data`・`model`・`model.params` など） | 再帰的にマージ。`data: {drop_cols: [...]}` なら `drop_cols` だけが変わり、`train_path` などは土台のまま |
+| リスト（`features`・`metrics`・`drop_cols` など） | **置き換え**（土台の要素は残らない） |
+| `null` | None にする（例: `forecast: null` で土台の再帰予測をやめる） |
+| `base: [a.yaml, b.yaml]` | 前から順に重ね、最後に自分のキーを重ねる |
+
+土台の YAML も `base` を持てます（循環はエラー）。アンサンブルの設定でも使えます。
+
+### `use`（特徴量ブロック）
+
+`features` の要素に `{use: <ブロック名>}` を書くと、ブロックのファイルの `steps` に展開されます。
+
+| 値 | 参照するファイル |
+|---|---|
+| 拡張子なしの名前（`categorical_target`） | `configs/features/categorical_target.yaml` |
+| `.yaml` で終わる値（`../blocks/x.yaml`） | `use` を書いた YAML からの相対パス |
+
+ブロックの書き方と一覧は [configs/features/README.md](../../configs/features/README.md) を参照してください。
+
+展開後は普通の設定になります。出力の `config.yaml` と MLflow には、どのステップを使ったかが展開済みの形で残ります。
+
+### 探索の進め方
+
+`configs/experiments/fe_*.yaml` に、そのまま回せる雛形があります。
+
+| ファイル | 内容 |
+|---|---|
+| `fe_base.yaml` | 共通設定とベースライン（序数エンコーディング）。速く回すため SHAP・誤差評価は無効。MLflow の実験名は `feature_search` |
+| `fe_target_encoding.yaml` | エンコーディングを、低頻度まとめ＋ターゲットエンコーディングに替える |
+| `fe_date_parts.yaml` | 日付の成分（月・日・曜日）を加える。`data.drop_cols` だけを上書きする例を兼ねる |
+
+1. 試したい特徴量をブロック（`configs/features/*.yaml`）にする。
+2. `fe_base.yaml` を `base` にした YAML を作り、`name` と `features` だけを書く。
+3. まとめて実行する。
+   ```bash
+   uv run python scripts/run_experiment.py --config "configs/experiments/fe_*.yaml"
+   ```
+4. MLflow の実験 `feature_search` で `cv_mean_rmse` などを並べて比較する。
+5. 有望なパターンだけ、`explain: {enabled: true}`・`evaluation: {enabled: true}` を上書きして SHAP・誤差評価を見る。
+
+全パターンが同じデータ・CV分割（`cv` と `seed`）を使うので、スコアの差は特徴量の違いによるものです。
+ただし fold 間のばらつき（`cv_std_*`）より小さな差は、偶然の範囲として扱ってください。
 
 ## タスクと評価指標
 

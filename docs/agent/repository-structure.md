@@ -6,6 +6,7 @@
 |-------------|------|
 | `src/` | 再利用可能なPythonモジュール（下表） |
 | `configs/experiments/` | モデル学習実験の設定YAML（`scripts/run_experiment.py` 用） |
+| `configs/features/` | 実験設定の `features` から `use: <名前>` で呼び出す特徴量ブロック（[README](../../configs/features/README.md)） |
 | `configs/ensembles/` | アンサンブルの設定YAML（`scripts/run_ensemble.py` 用） |
 | `notebook/` | 探索・分析用Jupyter Notebook |
 | `scripts/` | 実行スクリプト |
@@ -21,6 +22,7 @@
 | `outputs/optuna/` | Optuna studyのSQLite（gitignore対象） |
 | `mlruns/` | ローカルMLflowの実験ログ（gitignore対象） |
 | `docs/agent/` | エージェント向けプロジェクト文書 |
+| `docs/guides/` | 作業別のガイド（例: [特徴量の探索](../guides/feature_exploration.md)） |
 | `docs/modules/` | `src/` 以下のモジュールの仕様と使い方（[docs/modules/README.md](../modules/README.md)） |
 | `.claude/skills/` | 作業別スキルファイル（Claude Code） |
 

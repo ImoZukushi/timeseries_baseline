@@ -1,0 +1,5 @@
+# 列車番号・停車駅名を整数に置き換える（GBDT向けの最小限のエンコーディング）
+description: 列車番号・停車駅名の序数エンコーディング
+steps:
+  - class: feature_engineering.categorical.PolarsOrdinalEncoder
+    params: {variables: [列車番号, 停車駅名]}

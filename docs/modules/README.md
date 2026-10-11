@@ -73,4 +73,8 @@ from modeling.config import ExperimentConfig
 | `configs/experiments/*.yaml` / `configs/ensembles/*.yaml` | 実験・アンサンブルの設定の例 |
 | `tests/test_*.py` | 各関数の細かな挙動（境界条件・入力の形） |
 
+作業別のガイド:
+
+- [特徴量の探索（設定の継承・特徴量ブロック）](../guides/feature_exploration.md)
+
 ディレクトリ全体の構成は [../agent/repository-structure.md](../agent/repository-structure.md) を参照してください。

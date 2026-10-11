@@ -1,0 +1,9 @@
+# 出現の少ない列車番号を "Other" にまとめてから、目的変数の平均でエンコードする。
+# ターゲットエンコーディングは fold ごとに学習データだけで fit され、学習データ自身は
+# cross-fitting（他の fold の平均）で変換されるため、目的変数は漏れない。
+description: 列車番号の低頻度をまとめてからターゲットエンコーディング
+steps:
+  - class: feature_engineering.categorical.RareLabelGrouper
+    params: {variables: [列車番号], min_frequency: 20}
+  - class: feature_engineering.categorical.PolarsTargetEncoder
+    params: {variables: [列車番号, 停車駅名]}

@@ -4,6 +4,7 @@ EDA &amp; Baseline
 ## ドキュメント
 
 - [src/ モジュールリファレンス](docs/modules/README.md): `util` / `eda` / `feature_engineering` / `modeling` / `evaluation` の仕様と使い方
+- [特徴量の探索（設定の継承・特徴量ブロック）](docs/guides/feature_exploration.md): YAML を差分だけで書いて特徴量のパターンを比べる方法と、その仕様
 - [リポジトリ構成](docs/agent/repository-structure.md)
 
 ## 時系列ビューア

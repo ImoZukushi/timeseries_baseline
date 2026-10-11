@@ -2,10 +2,22 @@
 
 YAMLの内容をpydanticモデルで検証し、型の誤り・未知のキー・矛盾した組み合わせ
 （例: 時系列タスクに時間順序を無視したCVを指定）を実行前にエラーにする。
+
+YAMLの読み込み（`load_config_dict`）では、検証の前に次の2つを展開する。特徴量の組み合わせを
+いろいろ試すときに、共通部分を写さず差分だけを書けるようにするため。
+
+- `base: <YAML>`（またはリスト）: 別の設定を土台にして、書いたキーだけを上書きする。
+  dict は再帰的にマージし、リスト・値は置き換える。パスは書いたファイルからの相対パス。
+- `features` の要素 `{use: <ブロック>}`: 特徴量ブロックのファイル（`steps` のリスト）に展開する。
+  拡張子なしの名前は `configs/features/<名前>.yaml`、`.yaml` で終わる値は
+  書いたファイルからの相対パス。
+
+展開後は普通の設定になるため、出力の `config.yaml` や MLflow には展開済みの設定が残る。
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -14,6 +26,130 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from modeling.metrics import get_metric
 from modeling.tasks import Task, is_classification
+from util.paths import get_repo_root
+
+_YAML_SUFFIXES = (".yaml", ".yml")
+
+
+def default_feature_blocks_dir() -> Path:
+    """特徴量ブロックの既定の置き場所（`configs/features/`）。"""
+    return get_repo_root() / "configs" / "features"
+
+
+def _read_yaml_mapping(path: Path) -> dict[str, Any]:
+    """YAMLファイルを読み、最上位が mapping であることを確認して返す（空ファイルは空dict）。"""
+    if not path.is_file():
+        raise ValueError(f"設定ファイルが見つかりません: {path}")
+    with path.open("r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: YAMLの最上位はキーと値の組（mapping）にしてください")
+    return raw
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """dict を再帰的にマージする（両方が dict のキーは再帰、リスト・値は override で置き換え）。"""
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _chain_text(chain: Sequence[Path], last: Path) -> str:
+    return " → ".join(p.name for p in (*chain, last))
+
+
+def _expand_feature_blocks(
+    steps: Any, origin: Path, blocks_dir: Path, chain: tuple[Path, ...] = ()
+) -> Any:
+    """特徴量ステップのリストの `{use: ...}` を、ブロックファイルの `steps` に展開する。
+
+    Args:
+        steps: `features` の値（リスト以外はそのまま返し、検証は pydantic に任せる）。
+        origin: `steps` を書いたファイル（相対パスの基準）。
+        blocks_dir: 名前で指定したブロックの置き場所。
+        chain: 展開中のブロックファイル（循環の検出用）。
+
+    Raises:
+        ValueError: ブロックが無い・循環している・書式が誤っている場合。
+    """
+    if not isinstance(steps, list):
+        return steps
+    expanded: list[Any] = []
+    for step in steps:
+        if not (isinstance(step, dict) and "use" in step):
+            expanded.append(step)
+            continue
+        if set(step) != {"use"} or not isinstance(step["use"], str):
+            raise ValueError(
+                f"{origin}: use は `- use: <ブロック名>` の形で、"
+                f"他のキーを付けずに書いてください: {step}"
+            )
+        name = step["use"]
+        if name.endswith(_YAML_SUFFIXES):
+            block_path = (origin.parent / name).resolve()
+        else:
+            block_path = (blocks_dir / f"{name}.yaml").resolve()
+        if block_path in chain:
+            raise ValueError(f"特徴量ブロックが循環しています: {_chain_text(chain, block_path)}")
+        if not block_path.is_file():
+            raise ValueError(f"{origin}: 特徴量ブロックが見つかりません: {name}（{block_path}）")
+        block = _read_yaml_mapping(block_path)
+        if not isinstance(block.get("steps"), list):
+            raise ValueError(
+                f"{block_path}: 特徴量ブロックには steps（ステップのリスト）が必要です"
+            )
+        expanded += _expand_feature_blocks(
+            block["steps"], block_path, blocks_dir, (*chain, block_path)
+        )
+    return expanded
+
+
+def _resolve_config(path: Path, blocks_dir: Path, chain: tuple[Path, ...]) -> dict[str, Any]:
+    """1ファイル分の設定を、`use` を展開し `base` を重ねて返す。"""
+    path = path.resolve()
+    if path in chain:
+        raise ValueError(f"base が循環しています: {_chain_text(chain, path)}")
+    raw = _read_yaml_mapping(path)
+    # use はファイルごとに展開する（相対パスは、そのuseを書いたファイルが基準）
+    if "features" in raw:
+        raw["features"] = _expand_feature_blocks(raw["features"], path, blocks_dir)
+    bases = raw.pop("base", None)
+    if bases is None:
+        return raw
+    if isinstance(bases, str):
+        bases = [bases]
+    if not isinstance(bases, list) or not all(isinstance(b, str) for b in bases):
+        raise ValueError(f"{path}: base にはYAMLのパス（またはそのリスト）を書いてください")
+    merged: dict[str, Any] = {}
+    for base in bases:
+        base_path = Path(base) if Path(base).is_absolute() else path.parent / base
+        merged = _deep_merge(merged, _resolve_config(base_path, blocks_dir, (*chain, path)))
+    return _deep_merge(merged, raw)
+
+
+def load_config_dict(path: Path, feature_blocks_dir: Path | None = None) -> dict[str, Any]:
+    """YAMLを読み、`base` の継承と特徴量ブロック `use` を展開した dict を返す（検証はしない）。
+
+    Args:
+        path: 設定ファイルのパス。
+        feature_blocks_dir: 名前で指定した特徴量ブロックの置き場所
+            （Noneなら `configs/features/`）。
+
+    Returns:
+        展開済みの設定（`base` キーを含まない）。
+
+    Raises:
+        ValueError: 土台・ブロックのファイルが無い、循環している、書式が誤っている場合。
+    """
+    blocks_dir = feature_blocks_dir or default_feature_blocks_dir()
+    return _resolve_config(Path(path), blocks_dir, ())
+
 
 # 時間順序を保つCV（時系列タスクではこれ以外を禁止する）
 TIME_AWARE_CV_METHODS = frozenset({"time_series", "sliding_window", "time_cutoff"})
@@ -398,21 +534,21 @@ class ExperimentConfig(_StrictModel):
         return self.metrics[0]
 
 
-def load_experiment_config(path: Path) -> ExperimentConfig:
-    """YAMLファイルから実験設定を読み込んで検証する。
+def load_experiment_config(path: Path, feature_blocks_dir: Path | None = None) -> ExperimentConfig:
+    """YAMLファイルから実験設定を読み込んで検証する（`base`・`use` を展開してから検証）。
 
     Args:
         path: YAMLファイルのパス。
+        feature_blocks_dir: 特徴量ブロックの置き場所（Noneなら `configs/features/`）。
 
     Returns:
         検証済みの実験設定。
 
     Raises:
+        ValueError: `base`・`use` の展開に失敗した場合。
         pydantic.ValidationError: 設定内容が不正な場合。
     """
-    with path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-    return ExperimentConfig.model_validate(raw)
+    return ExperimentConfig.model_validate(load_config_dict(path, feature_blocks_dir))
 
 
 class EnsembleMemberConfig(_StrictModel):
@@ -495,11 +631,10 @@ class EnsembleConfig(_StrictModel):
 
 
 def load_ensemble_config(path: Path) -> EnsembleConfig:
-    """YAMLファイルからアンサンブル設定を読み込んで検証する。
+    """YAMLファイルからアンサンブル設定を読み込んで検証する（`base` を展開してから検証）。
 
     Raises:
+        ValueError: `base` の展開に失敗した場合。
         pydantic.ValidationError: 設定内容が不正な場合。
     """
-    with path.open("r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
-    return EnsembleConfig.model_validate(raw)
+    return EnsembleConfig.model_validate(load_config_dict(path))

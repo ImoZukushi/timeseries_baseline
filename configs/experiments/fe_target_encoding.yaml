@@ -1,0 +1,5 @@
+# ベースラインの序数エンコーディングを、低頻度まとめ＋ターゲットエンコーディングに替える。
+base: fe_base.yaml
+name: fe_target_encoding
+features:
+  - use: categorical_target
