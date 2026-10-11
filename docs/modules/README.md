@@ -76,5 +76,6 @@ from modeling.config import ExperimentConfig
 作業別のガイド:
 
 - [特徴量の探索（設定の継承・特徴量ブロック）](../guides/feature_exploration.md)
+- [ハイパーパラメータの探索とアンサンブル](../guides/hyperparameter_tuning.md)
 
 ディレクトリ全体の構成は [../agent/repository-structure.md](../agent/repository-structure.md) を参照してください。

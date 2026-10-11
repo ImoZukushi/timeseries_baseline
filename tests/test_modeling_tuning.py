@@ -13,7 +13,7 @@ import yaml
 from modeling.config import ExperimentConfig
 from modeling.experiment import Dataset, prepare_dataset, run_experiment
 from modeling.tracking import MLflowTracker
-from modeling.tuning import suggest_from_space, suggest_params, tune
+from modeling.tuning import study_name, suggest_from_space, suggest_params, tune
 
 
 def _config(model: str = "lightgbm", **tuning: Any) -> ExperimentConfig:
@@ -86,11 +86,53 @@ def test_tune_linear_with_custom_space(dataset: Dataset) -> None:
     assert set(result.best_params) == {"alpha"}
 
 
-def test_tune_resumes_study_from_storage(dataset: Dataset, tmp_path: Path) -> None:
+def test_tune_n_trials_is_total_target(dataset: Dataset, tmp_path: Path) -> None:
     storage = tmp_path / "study.db"
-    tune(_config(), dataset, n_trials=2, storage_path=storage)
-    resumed = tune(_config(), dataset, n_trials=2, storage_path=storage)
-    assert resumed.n_trials == 4
+    first = tune(_config(), dataset, n_trials=2, storage_path=storage)
+    assert (first.n_trials, first.n_new_trials) == (2, 2)
+    # 同じ目標で再実行しても試行は増えず、保存済みの最良パラメータを返す
+    again = tune(_config(), dataset, n_trials=2, storage_path=storage)
+    assert (again.n_trials, again.n_new_trials) == (2, 0)
+    assert again.best_params == first.best_params
+    assert again.study_name == first.study_name == study_name(_config())
+    # 目標を上げると、足りない分だけ実行する
+    more = tune(_config(), dataset, n_trials=5, storage_path=storage)
+    assert (more.n_trials, more.n_new_trials) == (5, 3)
+
+
+def test_study_name_changes_only_with_objective_settings(tmp_path: Path) -> None:
+    base = _config()
+    name = study_name(base)
+    assert name.startswith("tune_lightgbm__")
+
+    def changed(**updates: Any) -> str:
+        raw = base.model_dump(mode="json", by_alias=True)
+        for key, value in updates.items():
+            raw[key] = value if not isinstance(value, dict) else raw[key] | value
+        return study_name(ExperimentConfig.model_validate(raw))
+
+    # 探索の条件（探索空間・特徴量・CV・モデルの固定値）が変わると別の study
+    space = {"learning_rate": {"type": "float", "low": 0.01, "high": 0.1}}
+    assert changed(tuning={"search_space": space}) != name
+    step = {"class": "feature_engineering.numeric.LogTransformer", "params": {"variables": ["a"]}}
+    assert changed(features=[step]) != name
+    assert changed(cv={"n_splits": 4}) != name
+    assert changed(model={"params": {"n_estimators": 50}}) != name
+    # 結果に影響しない設定（SHAP・誤差評価・記録・試行回数）では同じ study
+    assert changed(explain={"enabled": False}) == name
+    assert changed(evaluation={"enabled": False}) == name
+    assert changed(tracking={"enabled": False}) == name
+    assert changed(tuning={"n_trials": 999, "timeout": 10.0}) == name
+
+
+def test_study_name_changes_with_training_data_content(tmp_path: Path) -> None:
+    data = tmp_path / "train.csv"
+    data.write_text("x,y_reg\n1,2\n", encoding="utf-8")
+    raw = _config().model_dump(mode="json", by_alias=True)
+    raw["data"]["train_path"] = str(data)
+    before = study_name(ExperimentConfig.model_validate(raw))
+    data.write_text("x,y_reg\n1,3\n", encoding="utf-8")
+    assert study_name(ExperimentConfig.model_validate(raw)) != before
 
 
 def test_tune_direction_follows_metric(synthetic_frame: pl.DataFrame) -> None:
@@ -131,12 +173,19 @@ def test_run_experiment_with_tuning_logs_child_runs(dataset: Dataset, tmp_path: 
     assert result.tuning_result is not None
     assert result.cv_result.params == result.tuning_result.best_params
     assert (result.output_dir / "tuning_trials.csv").is_file()
+    summary = yaml.safe_load(
+        (result.output_dir / "tuning_summary.yaml").read_text(encoding="utf-8")
+    )
+    assert summary["study_name"] == result.tuning_result.study_name
+    assert summary["best_params"] == result.tuning_result.best_params
     assert (tmp_path / "optuna" / "tune_lightgbm.db").is_file()
     children = mlflow.search_runs(
         experiment_names=["tune_exp"],
         filter_string=f"tags.mlflow.parentRunId = '{result.run_id}'",
     )
     assert len(children) == 2
+    run = mlflow.get_run(result.run_id)
+    assert run.data.tags["optuna_study"] == result.tuning_result.study_name
 
 
 def test_run_experiment_script_with_tune(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:

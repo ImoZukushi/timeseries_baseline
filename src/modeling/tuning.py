@@ -4,11 +4,19 @@
 `forecast` 指定時は再帰バックテストのスコア（長期予測の精度）になる。
 CV分割は `Dataset.folds` を全試行で使い回すため、試行間のスコア差は純粋にパラメータの差になる。
 fold毎のスコアを `trial.report` に渡し、見込みの薄い試行はMedianPrunerで途中打ち切りする。
-studyはSQLiteに保存するため、同じ実験名で再実行すると続きから探索できる。
+
+studyはSQLiteに保存し、再実行すると続きから探索する。
+
+- 試行回数（`n_trials`）は **study 全体での終了済み試行数の目標** で、足りない分だけ実行する。
+  目標に達していれば探索せずに最良パラメータを返すため、中断しても同じコマンドで再開できる。
+- study 名は `<実験名>__<設定の指紋>`。探索の目的関数を変える設定（データの内容・特徴量・CV・
+  モデル・主指標・探索空間など）が変わると別の study になり、条件の違う試行が混ざらない。
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +31,7 @@ from modeling.dataset import Dataset, cross_validate
 from modeling.metrics import get_metric
 from modeling.models import get_model_spec
 from modeling.tracking import NullTracker, Tracker
+from util.paths import get_repo_root
 
 # 試行ごとのINFOログを抑制する（結果は TuningResult.trials とMLflowで確認する）
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -38,12 +47,16 @@ class TuningResult:
         best_value: 最良試行の主指標（fold平均）。
         n_trials: study内の完了済み試行数（再開前の試行も含む）。
         trials: 試行一覧（番号・状態・スコア・パラメータ）。
+        study_name: 使ったstudyの名前（`<実験名>__<設定の指紋>`）。
+        n_new_trials: 今回の実行で終了した試行数（目標に達していれば0）。
     """
 
     best_params: dict[str, Any]
     best_value: float
     n_trials: int
     trials: pl.DataFrame
+    study_name: str = ""
+    n_new_trials: int = 0
 
 
 def suggest_from_space(trial: optuna.Trial, search_space: dict[str, dict[str, Any]]) -> dict:
@@ -91,8 +104,63 @@ def suggest_params(trial: optuna.Trial, config: ExperimentConfig) -> dict[str, A
     return {**config.model.params, **sampled}
 
 
+# 学習データの内容のハッシュ（同じプロセスで同じファイルを何度も読まないようにする）
+_FILE_HASHES: dict[tuple[str, int, int], str] = {}
+
+
+def _file_hash(path: Path) -> str | None:
+    """ファイル内容の SHA1（ファイルが無ければNone）。"""
+    if not path.is_file():
+        return None
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    if key not in _FILE_HASHES:
+        digest = hashlib.sha1()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        _FILE_HASHES[key] = digest.hexdigest()
+    return _FILE_HASHES[key]
+
+
+def study_fingerprint(config: ExperimentConfig) -> str:
+    """探索の目的関数を決める設定の指紋（SHA1 の16進文字列）。
+
+    含めるもの: task・data（列の指定と学習データの内容）・features・cv・model・主指標・
+    探索空間・pruning・forecast・seed。含めないもの（変えても同じstudyを使う）:
+    実験名・explain・evaluation・tracking・test_prediction・試行回数・timeout。
+    """
+    dumped = config.model_dump(mode="json", by_alias=True)
+    train_path = config.data.train_path
+    if not train_path.is_absolute():
+        train_path = get_repo_root() / train_path
+    payload = {
+        "task": dumped["task"],
+        "data": dumped["data"],
+        "train_content": _file_hash(train_path),
+        "features": dumped["features"],
+        "cv": dumped["cv"],
+        "model": dumped["model"],
+        "primary_metric": config.primary_metric,
+        "search_space": dumped["tuning"]["search_space"],
+        "pruning": dumped["tuning"]["pruning"],
+        "forecast": dumped["forecast"],
+        "seed": dumped["seed"],
+    }
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def study_name(config: ExperimentConfig) -> str:
+    """studyの名前（`<実験名>__<設定の指紋の先頭8桁>`）。"""
+    return f"{config.name}__{study_fingerprint(config)[:8]}"
+
+
 def make_study(config: ExperimentConfig, storage_path: Path | None = None) -> optuna.Study:
-    """studyを作る（`storage_path` のSQLiteに同名studyがあれば読み込んで再開）。"""
+    """studyを作る（`storage_path` のSQLiteに同じ名前のstudyがあれば読み込んで再開）。
+
+    名前は `study_name(config)`。探索の条件が変わると名前が変わり、新しいstudyになる。
+    """
     metric = get_metric(config.primary_metric)
     pruner: optuna.pruners.BasePruner = (
         optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1)
@@ -104,7 +172,7 @@ def make_study(config: ExperimentConfig, storage_path: Path | None = None) -> op
         storage_path.parent.mkdir(parents=True, exist_ok=True)
         storage = f"sqlite:///{storage_path.as_posix()}"
     return optuna.create_study(
-        study_name=config.name,
+        study_name=study_name(config),
         storage=storage,
         load_if_exists=True,
         direction=metric.direction,
@@ -123,11 +191,14 @@ def tune(
 ) -> TuningResult:
     """ハイパーパラメータを探索する。
 
+    study 内の終了済み試行（完了＋打ち切り）が `n_trials` に満たない分だけ試行する。
+    すでに達していれば探索せず、保存済みの最良パラメータを返す。
+
     Args:
         config: 実験設定。
         dataset: 学習用データ一式（CV分割を含む）。
-        n_trials: 今回追加で実行する試行数（Noneなら `config.tuning.n_trials`）。
-        timeout: 打ち切り秒数（Noneなら `config.tuning.timeout`）。
+        n_trials: study 全体での終了済み試行数の目標（Noneなら `config.tuning.n_trials`）。
+        timeout: 今回の実行の打ち切り秒数（Noneなら `config.tuning.timeout`）。
         storage_path: studyを保存するSQLiteファイル（Noneならメモリ上のみ）。
         tracker: 各試行を子runとして記録する記録先（親runが開始済みであること）。
 
@@ -159,12 +230,18 @@ def tune(
             tracker.log_metrics({f"cv_mean_{config.primary_metric}": value})
         return value
 
-    study.optimize(
-        objective,
-        n_trials=n_trials if n_trials is not None else config.tuning.n_trials,
-        timeout=timeout if timeout is not None else config.tuning.timeout,
-        catch=(),
-    )
+    finished_states = [optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED]
+    target = n_trials if n_trials is not None else config.tuning.n_trials
+    finished_before = len(study.get_trials(deepcopy=False, states=finished_states))
+    remaining = max(0, target - finished_before)
+    if remaining:
+        study.optimize(
+            objective,
+            n_trials=remaining,
+            timeout=timeout if timeout is not None else config.tuning.timeout,
+            catch=(),
+        )
+    finished_after = len(study.get_trials(deepcopy=False, states=finished_states))
     completed = study.get_trials(states=[optuna.trial.TrialState.COMPLETE])
     if not completed:
         raise RuntimeError("完了した試行がありません（全試行が打ち切られた可能性があります）")
@@ -174,6 +251,8 @@ def tune(
         best_value=float(study.best_value),
         n_trials=len(completed),
         trials=trials_frame(study),
+        study_name=study.study_name,
+        n_new_trials=finished_after - finished_before,
     )
 
 

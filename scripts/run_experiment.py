@@ -10,7 +10,9 @@ Usage:
     uv run python scripts/run_experiment.py --config configs/exp.yaml --tune --n-trials 30
 
 `--tune` を付けるとOptunaでハイパーパラメータを探索し、最良パラメータでCV学習し直す。
-studyは `outputs/optuna/{実験名}.db` に保存され、同じコマンドを再実行すると続きから探索する。
+studyは `outputs/optuna/{実験名}.db` に保存され、同じコマンドを再実行すると続きから探索する
+（`--n-trials` は study 全体の目標で、達していれば探索を飛ばす）。探索の条件（データ・特徴量・
+CV・モデル・探索空間など）を変えると、自動で新しい study になる。
 """
 
 from __future__ import annotations
@@ -71,7 +73,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--tune", action="store_true", help="Optunaでチューニングする（設定の tuning.enabled も可）"
     )
-    parser.add_argument("--n-trials", type=int, default=None, help="チューニングの試行回数")
+    parser.add_argument(
+        "--n-trials",
+        type=int,
+        default=None,
+        help="study 全体での試行回数の目標（足りない分だけ実行する。既定: 設定の tuning.n_trials）",
+    )
     parser.add_argument(
         "--no-explain", action="store_true", help="SHAPを計算しない（設定の explain.enabled も可）"
     )

@@ -1,0 +1,6 @@
+# 木モデルと性質の違う線形モデルを混ぜると、アンサンブルの効果が出やすい。
+# 線形モデルには整数の序数より、目的変数の平均でのエンコーディングの方が向く。
+base: [common.yaml, ../../search_spaces/linear.yaml]
+name: example_ensemble_linear
+features:
+  - use: categorical_target

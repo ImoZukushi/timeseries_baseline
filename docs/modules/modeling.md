@@ -40,7 +40,8 @@ YAML ──load_experiment_config──▶ ExperimentConfig（pydantic で検証
 | `dataset` | 学習用データ一式 `Dataset` と `cross_validate` |
 | `trainer` | CV学習ループ（`run_cv`）と結果 `CVResult` |
 | `forecasting` | 再帰的多段予測・再帰バックテスト・目的変数の変換 |
-| `tuning` | Optuna によるチューニング |
+| `tuning` | Optuna によるチューニング（試行回数は study 全体の目標、study は設定の指紋で分ける） |
+| `tuning_pipeline` | 複数モデルの探索 → 学習 → アンサンブルの一括実行（`scripts/run_pipeline.py`） |
 | `explain` | OOF SHAP |
 | `evaluation` | CV結果から誤差評価の図・表を作る（部品は `src/evaluation`） |
 | `experiment` | 1実験の実行（`prepare_dataset` / `run_experiment`） |
@@ -186,7 +187,7 @@ early stopping は検証 fold で打ち切り回数を決めるため、OOF ス�
 | キー | 既定 | 内容 |
 |---|---|---|
 | `enabled` | false | チューニングするか（CLI の `--tune` でも可） |
-| `n_trials` / `timeout` | 50 / なし | 試行回数・打ち切り秒数 |
+| `n_trials` / `timeout` | 50 / なし | study 全体での試行回数の**目標**（足りない分だけ実行）・今回の実行の打ち切り秒数 |
 | `search_space` | なし（モデルの既定） | 探索空間の上書き（下の例） |
 | `pruning` | true | fold ごとのスコアで見込みの薄い試行を打ち切る（MedianPruner） |
 
@@ -201,8 +202,14 @@ tuning:
     min_child_samples: {type: fixed, value: 20}
 ```
 
-study は `outputs/optuna/{name}.db`（SQLite）に保存されます。同じ実験名で再実行すると、続きから探索します。
-最良のパラメータで CV をやり直した結果が、実験の結果になります。試行の一覧は `tuning_trials.csv` に保存されます。
+study は `outputs/optuna/{name}.db`（SQLite）に、`<実験名>__<設定の指紋8桁>` という名前で保存されます。
+
+- **再実行:** 同じ設定で再実行すると続きから探索し、`n_trials` に達していれば探索を飛ばして、保存済みの最良パラメータで学習します。
+- **条件が変わったとき:** 探索の条件（学習データの内容・特徴量・CV・モデル・主指標・探索空間など）が変わると、自動で新しい study になります。
+- **結果:** 最良のパラメータで CV をやり直した結果が、実験の結果になります。
+- **保存されるファイル:** 試行の一覧は `tuning_trials.csv`、study 名と最良パラメータは `tuning_summary.yaml` に保存されます。
+
+複数のモデルを探索してアンサンブルするまでの自動化（`scripts/run_pipeline.py`）は、[docs/guides/hyperparameter_tuning.md](../guides/hyperparameter_tuning.md) を参照してください。
 
 ### `explain`
 

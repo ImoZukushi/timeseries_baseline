@@ -110,6 +110,22 @@ def _expand_feature_blocks(
     return expanded
 
 
+def _resolve_member_paths(raw: dict[str, Any], origin: Path) -> None:
+    """パイプライン設定の `members[].config` の相対パスを、書いたファイルからの絶対パスにする。
+
+    実験設定・アンサンブル設定には `members[].config` が無いため影響しない
+    （アンサンブル設定の `members[].path` はリポジトリルート基準のまま）。
+    """
+    members = raw.get("members")
+    if not isinstance(members, list):
+        return
+    for member in members:
+        if isinstance(member, dict) and isinstance(member.get("config"), str):
+            member_path = Path(member["config"])
+            if not member_path.is_absolute():
+                member["config"] = str((origin.parent / member_path).resolve())
+
+
 def _resolve_config(path: Path, blocks_dir: Path, chain: tuple[Path, ...]) -> dict[str, Any]:
     """1ファイル分の設定を、`use` を展開し `base` を重ねて返す。"""
     path = path.resolve()
@@ -119,6 +135,8 @@ def _resolve_config(path: Path, blocks_dir: Path, chain: tuple[Path, ...]) -> di
     # use はファイルごとに展開する（相対パスは、そのuseを書いたファイルが基準）
     if "features" in raw:
         raw["features"] = _expand_feature_blocks(raw["features"], path, blocks_dir)
+    # パイプライン設定の構成モデルのパスも、書いたファイルを基準に絶対パスにしておく
+    _resolve_member_paths(raw, path)
     bases = raw.pop("base", None)
     if bases is None:
         return raw
@@ -638,3 +656,75 @@ def load_ensemble_config(path: Path) -> EnsembleConfig:
         pydantic.ValidationError: 設定内容が不正な場合。
     """
     return EnsembleConfig.model_validate(load_config_dict(path))
+
+
+EnsembleMethod = Literal["mean", "rank_mean", "weighted", "stacking"]
+
+
+class PipelineMemberConfig(_StrictModel):
+    """パイプラインの構成モデル（1実験分）の指定。
+
+    Attributes:
+        config: 実験設定のYAML（`load_pipeline_config` でパイプラインYAMLからの相対パスを解決）。
+        tune: Optunaで探索するか（Falseなら実験設定の `model.params` で学習する）。
+        n_trials: study全体での試行回数の目標（Noneなら実験設定の `tuning.n_trials`）。
+        timeout: 今回の実行での探索の打ち切り秒数（Noneなら実験設定の `tuning.timeout`）。
+    """
+
+    config: Path
+    tune: bool = True
+    n_trials: int | None = Field(default=None, ge=1)
+    timeout: float | None = Field(default=None, gt=0)
+
+
+class PipelineEnsembleConfig(_StrictModel):
+    """パイプラインのアンサンブルの設定。
+
+    Attributes:
+        methods: 試す統合方法（すべて実行し、交差検証したOOFスコアで比較する）。
+        metrics: 評価指標（Noneなら構成モデルの `metrics`。先頭が主指標）。
+        stacking: `stacking` のメタモデル設定。
+    """
+
+    methods: list[EnsembleMethod] = Field(
+        default_factory=lambda: list[EnsembleMethod](["mean", "weighted"]), min_length=1
+    )
+    metrics: list[str] | None = None
+    stacking: StackingConfig = Field(default_factory=StackingConfig)
+
+    @model_validator(mode="after")
+    def _check_unique(self) -> PipelineEnsembleConfig:
+        if len(set(self.methods)) != len(self.methods):
+            raise ValueError(f"ensemble.methods が重複しています: {self.methods}")
+        return self
+
+
+class TuningPipelineConfig(_StrictModel):
+    """探索 → 学習 → アンサンブルを一括実行するパイプラインの設定。
+
+    Attributes:
+        name: パイプライン名（出力ディレクトリ名）。
+        members: 構成モデル。1つだけならアンサンブルは行わない。
+        ensemble: アンサンブルの設定。
+        seed: アンサンブル（重み・スタッキング）の乱数シード。
+        tracking: アンサンブルの実験ログ設定（構成モデルは各実験設定の `tracking` に従う）。
+    """
+
+    name: str
+    members: list[PipelineMemberConfig] = Field(min_length=1)
+    ensemble: PipelineEnsembleConfig = Field(default_factory=PipelineEnsembleConfig)
+    seed: int = 42
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+
+
+def load_pipeline_config(path: Path) -> TuningPipelineConfig:
+    """パイプラインのYAMLを読み込んで検証する（`base` を展開し、構成モデルのパスを解決する）。
+
+    `members[].config` の相対パスは、その `members` を書いたYAMLのディレクトリを基準にする
+    （`base` から継承した `members` は、土台のファイルが基準。`load_config_dict` で解決済み）。
+
+    Raises:
+        ValueError: `base` の展開に失敗した場合。
+        pydantic.ValidationError: 設定内容が不正な場合。
+    """
+    return TuningPipelineConfig.model_validate(load_config_dict(path))

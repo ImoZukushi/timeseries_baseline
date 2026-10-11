@@ -1,0 +1,18 @@
+# 構成モデルの共通設定（データ・CV・指標）。各構成モデルはこのファイルと探索範囲を base にする。
+# アンサンブルは OOF 予測を行ごとに組み合わせるため、データ・CV分割・主指標は全構成モデルで
+# 同じにする必要がある（run_pipeline.py が実行前に確認する）。
+# 目的変数 `合計` は仮置き。`フェンダー部分(東京方向)` / `台車部分` / `フェンダー部分(金沢方向)` は
+# `合計` の内訳でありリークになるため除外している。
+task: regression
+data:
+  train_path: data/processed/train_with_departure_time.csv
+  target: 合計
+  group_col: 年月日  # 同じ日のデータがtrain/validに跨らないようにする
+  drop_cols: [年月日, 発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]
+cv: {method: group, n_splits: 5, seed: 42}
+metrics: [rmse, mae]
+tuning: {n_trials: 30}
+# 探索中に毎回 SHAP・誤差評価を作ると遅いため無効にする（必要なら構成モデル側で上書き）
+explain: {enabled: false}
+evaluation: {enabled: false}
+tracking: {experiment_name: example_ensemble}

@@ -1,0 +1,4 @@
+base: [common.yaml, ../../search_spaces/lightgbm.yaml]
+name: example_ensemble_lgbm
+features:
+  - use: categorical_ordinal

@@ -1,0 +1,4 @@
+base: [common.yaml, ../../search_spaces/xgboost.yaml]
+name: example_ensemble_xgb
+features:
+  - use: categorical_ordinal

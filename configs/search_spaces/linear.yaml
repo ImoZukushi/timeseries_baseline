@@ -1,0 +1,8 @@
+# 線形モデル（回帰: Ridge）の探索範囲。実験設定から base で継承して使う。
+# 分類（LogisticRegression）で使う場合は、alpha の代わりに C を探索する:
+#   search_space: {C: {type: float, low: 1.0e-3, high: 100.0, log: true}}
+model:
+  name: linear
+tuning:
+  search_space:
+    alpha: {type: float, low: 1.0e-3, high: 1.0e+3, log: true}

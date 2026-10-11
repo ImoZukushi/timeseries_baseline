@@ -26,7 +26,7 @@ from modeling.io import OOF_FILENAME, TEST_FILENAME, predictions_to_frame, save_
 from modeling.tasks import encode_target
 from modeling.tracking import NullTracker, Tracker
 from modeling.trainer import CVResult
-from modeling.tuning import TuningResult, tune
+from modeling.tuning import TuningResult, study_name, tune
 from util.csv_io import read_csv_auto
 from util.paths import ensure_parent_dir, get_repo_root, outputs_dir
 from util.plotting import add_caption
@@ -230,6 +230,28 @@ def save_horizon_outputs(
     return [table_path, figure_path]
 
 
+def save_tuning_outputs(result: TuningResult, storage: Path, output_dir: Path) -> list[Path]:
+    """チューニングの試行一覧（`tuning_trials.csv`）と要約（`tuning_summary.yaml`）を保存する。"""
+    trials_path = output_dir / "tuning_trials.csv"
+    result.trials.write_csv(trials_path)
+    summary_path = output_dir / "tuning_summary.yaml"
+    with summary_path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            {
+                "study_name": result.study_name,
+                "storage": str(storage),
+                "n_trials": result.n_trials,
+                "n_new_trials": result.n_new_trials,
+                "best_value": result.best_value,
+                "best_params": result.best_params,
+            },
+            f,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+    return [trials_path, summary_path]
+
+
 def run_experiment(
     config: ExperimentConfig,
     dataset: Dataset | None = None,
@@ -240,6 +262,8 @@ def run_experiment(
     n_trials: int | None = None,
     optuna_dir: Path | None = None,
     explain: bool | None = None,
+    timeout: float | None = None,
+    extra_tags: dict[str, str] | None = None,
 ) -> ExperimentResult:
     """1実験を実行する。
 
@@ -253,9 +277,12 @@ def run_experiment(
         output_root: 出力のルート（Noneなら `outputs/experiments`）。
         params: モデルパラメータ（Noneなら設定値。チューニング時は無視される）。
         tune_params: チューニングするか（Noneなら `config.tuning.enabled`）。
-        n_trials: 試行回数の上書き（Noneなら `config.tuning.n_trials`）。
+        n_trials: study全体での試行回数の目標の上書き（Noneなら `config.tuning.n_trials`）。
+            目標に達していれば探索せず、保存済みの最良パラメータで学習する。
         optuna_dir: Optuna studyを保存するディレクトリ（Noneなら `outputs/optuna`）。
         explain: SHAPを計算するか（Noneなら `config.explain.enabled`）。
+        timeout: 今回の探索の打ち切り秒数の上書き（Noneなら `config.tuning.timeout`）。
+        extra_tags: MLflowのrunに追加するタグ（パイプライン名など）。
 
     Returns:
         実験結果。
@@ -268,18 +295,24 @@ def run_experiment(
     tags = {"model": config.model.name, "task": str(config.task), "cv": config.cv.method}
     if do_tune:
         tags["tuned"] = "true"
+        tags["optuna_study"] = study_name(config)
+    tags |= extra_tags or {}
     tuning_result: TuningResult | None = None
     with tracker.start_run(run_name=config.name, tags=tags):
         if do_tune:
             storage = (optuna_dir or outputs_dir() / "optuna") / f"{config.name}.db"
             tuning_result = tune(
-                config, dataset, n_trials=n_trials, storage_path=storage, tracker=tracker
+                config,
+                dataset,
+                n_trials=n_trials,
+                timeout=timeout,
+                storage_path=storage,
+                tracker=tracker,
             )
             params = tuning_result.best_params
             tracker.log_metrics({f"tuning_best_{config.primary_metric}": tuning_result.best_value})
-            trials_path = output_dir / "tuning_trials.csv"
-            tuning_result.trials.write_csv(trials_path)
-            tracker.log_artifact(trials_path)
+            for path in save_tuning_outputs(tuning_result, storage, output_dir):
+                tracker.log_artifact(path)
         result = cross_validate(config, dataset, params=params)
         tracker.log_params(
             {
