@@ -5,8 +5,8 @@
 
 ```bash
 # 構成要素の実験を先に実行しておく
-uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml configs/experiments/example_dummy.yaml
-uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.yaml
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml configs/experiments/hx_dummy_baseline.yaml
+uv run python scripts/run_ensemble.py --config configs/ensembles/hx_blend.yaml
 ```
 
 出力は `outputs/ensembles/<name>/<日時>/` です。
@@ -24,7 +24,7 @@ uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.y
 
 | ファイル | 内容 |
 |---|---|
-| `example_blend.yaml` | `example_lgbm` と `example_dummy` の加重平均（`weighted`） |
+| `hx_blend.yaml` | 熱交換器ダミーデータの `hx_lgbm` と `hx_dummy_baseline` の加重平均（`weighted`） |
 
 ## 書き方
 
@@ -32,7 +32,7 @@ uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.y
 name: my_blend
 task: regression
 members:                                       # 2つ以上
-  - {name: lgbm, experiment: example_lgbm}     # outputs/experiments/example_lgbm/ の最新の実行
+  - {name: lgbm, experiment: hx_lgbm}          # outputs/experiments/hx_lgbm/ の最新の実行
   - {name: xgb, path: outputs/experiments/x/20260101_000000_000000}  # 出力ディレクトリを直接指定（リポジトリルート基準）
   - {name: nn, run_id: 0123abcd...}            # MLflow の run の artifact から読む
 method: weighted      # mean / rank_mean（二値分類のみ）/ weighted / stacking

@@ -1,0 +1,9 @@
+# 構成モデルの共通設定。データ・特徴量・CV・指標は configs/experiments/common/hx_dummy.yaml を継承する。
+# アンサンブルは OOF 予測を行ごとに組み合わせるため、データ・CV分割・主指標は全構成モデルで
+# 同じにする必要がある（run_pipeline.py が実行前に確認する）。
+base: ../../experiments/common/hx_dummy.yaml
+tuning: {n_trials: 30}
+# 探索中に毎回 SHAP・誤差評価を作ると遅いため無効にする（必要なら構成モデル側で上書き）
+explain: {enabled: false}
+evaluation: {enabled: false}
+tracking: {experiment_name: hx_ensemble}

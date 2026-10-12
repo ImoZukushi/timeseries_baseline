@@ -1,0 +1,21 @@
+# 熱交換器ダミーデータ（前処理済み）で予測モデルを作るときの共通設定（データ・特徴量・CV・指標）。
+# 実験・特徴量の探索・パイプラインの各設定から base で継承する。name は継承先で付ける。
+# サブディレクトリに置いているので、`configs/experiments/*.yaml` の glob には含まれない。
+#
+# データ: scripts/preprocess_heat_exchanger_dummy.py で作る縦持ちのデータセット（1行 = 1日 × 1機器）。
+# 列の意味は docs/agent/data-catalog.md の「前処理済みデータセット」を参照。
+task: regression
+data:
+  train_path: data/processed/dummy/train_dataset.parquet
+  test_path: data/processed/dummy/test_dataset.parquet
+  target: 汚れ係数
+  time_col: 日付
+  drop_cols: [日付, 機器]   # 日付は CV の分割だけに使う。機器は数値の 機器番号 で表す
+features:
+  - use: hx_chemical_ordinal   # 薬剤種類（文字列）を整数に置き換える
+# テスト（翌1年分の予測）に合わせ、年ごとに「それより前の全期間で学習 → 翌1年で検証」する
+cv:
+  method: time_cutoff
+  cutoffs: ["2022-01-01", "2023-01-01", "2024-01-01"]   # 検証期間の開始（3 fold）
+  valid_end: "2025-01-01"
+metrics: [rmse, mae]   # 先頭が主指標（チューニング・アンサンブル・特徴量の探索で最適化する）

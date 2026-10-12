@@ -5,7 +5,7 @@
 結果は `outputs/pipelines/<name>/<日時>/` にまとめて保存する（`summary.csv`・`final.yaml` など）。
 
 Usage:
-    uv run python scripts/run_pipeline.py --config configs/pipelines/example_ensemble.yaml
+    uv run python scripts/run_pipeline.py --config configs/pipelines/hx_ensemble.yaml
     uv run python scripts/run_pipeline.py --config <パイプライン設定> --no-tracking
     uv run python scripts/run_pipeline.py --config <パイプライン設定> --skip-tuning
     uv run python scripts/run_pipeline.py --config <パイプライン設定> --check   # 設定の検証のみ
@@ -31,7 +31,7 @@ matplotlib.use("Agg")
 import polars as pl  # noqa: E402
 
 from modeling.config import ExperimentConfig, load_pipeline_config  # noqa: E402
-from modeling.tracking import MLflowTracker, NullTracker, Tracker  # noqa: E402
+from modeling.tracking import Tracker, make_tracker  # noqa: E402
 from modeling.tuning_pipeline import (  # noqa: E402
     load_members,
     run_tuning_pipeline,
@@ -74,19 +74,9 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     def member_tracker(cfg: ExperimentConfig) -> Tracker:
-        if args.no_tracking or not cfg.tracking.enabled:
-            return NullTracker()
-        return MLflowTracker(
-            experiment_name=cfg.tracking.experiment_name or cfg.name,
-            tracking_uri=cfg.tracking.tracking_uri,
-        )
+        return make_tracker(cfg.tracking, cfg.name, enabled=not args.no_tracking)
 
-    ensemble_tracker: Tracker = NullTracker()
-    if not args.no_tracking and config.tracking.enabled:
-        ensemble_tracker = MLflowTracker(
-            experiment_name=config.tracking.experiment_name or config.name,
-            tracking_uri=config.tracking.tracking_uri,
-        )
+    ensemble_tracker = make_tracker(config.tracking, config.name, enabled=not args.no_tracking)
 
     start = time.perf_counter()
     result = run_tuning_pipeline(

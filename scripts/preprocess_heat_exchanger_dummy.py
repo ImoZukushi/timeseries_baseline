@@ -70,9 +70,9 @@ from eda_heat_exchanger_dummy import (
     TARGET,
     TIME_COL,
     UNIT_COL,
-    _setup_style,
     load_dummy,
     save_figure,
+    setup_style,
     to_long,
     weighted_crude_properties,
 )
@@ -632,7 +632,7 @@ def plot_cleaning_detection(
     Returns:
         図。
     """
-    _setup_style()
+    setup_style()
     raw = before.filter(pl.col(UNIT_COL) == unit)
     feat = features.filter(pl.col(UNIT_COL) == unit)
     fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True, constrained_layout=True)

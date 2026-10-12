@@ -20,7 +20,7 @@ class DataFile:
 
     Attributes:
         path: ファイルの絶対パス。
-        label: 画面に出す名前（ルートの親からの相対パス。例: `data/raw/weather.csv`）。
+        label: 画面に出す名前（ルートの親からの相対パス。例: `data/raw/dummy/train.csv`）。
         size: ファイルサイズ（バイト）。
     """
 

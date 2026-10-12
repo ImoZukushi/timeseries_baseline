@@ -39,11 +39,11 @@ from eda.csv_quality import run_quality_checks
 from util.csv_io import read_csv_auto
 from util.paths import data_dir, outputs_dir
 
-path = data_dir() / "raw" / "DailyDelhiClimateTrain.csv"
+path = data_dir() / "raw" / "dummy" / "train.csv"
 df = read_csv_auto(path)
 overview, columns = run_quality_checks(
     df,
-    dataset_name="DailyDelhiClimateTrain",
+    dataset_name="dummy_train",
     source_path=str(path),
     figures_dir=outputs_dir() / "figures",
     tables_dir=outputs_dir() / "tables",
@@ -59,7 +59,7 @@ overview, columns = run_quality_checks(
 | `plot_missing_overview` / `plot_numeric_histograms` / `plot_categorical_top_values` / `plot_correlation_heatmap` / `plot_record_pattern` | 上の表の各図 |
 | `plot_scatter_matrices(df, dataset_name, n_rows, figures_dir, max_cols_per_image=3)` | 散布図行列をまとめて保存し、パスのリストを返す |
 | `complete_case_correlation(df, numeric_cols)` | 欠損のない行だけの相関行列と、使った行数 |
-| `make_dataset_name(path, raw_dir)` | `data/raw/wind_0/下条川.csv` → `wind_0_下条川` のような識別名 |
+| `make_dataset_name(path, raw_dir)` | `data/raw/dummy/train.csv` → `dummy_train` のような識別名 |
 
 ## `eda.time_series_eda`
 
@@ -98,15 +98,22 @@ overview, columns = run_quality_checks(
 - 1列で一意にならない場合は、誤った自己相関を描かないよう、そのデータは対象外にします。
 
 ```python
+import polars as pl
+
 from eda.time_series_eda import run_time_series_checks
-from util.csv_io import read_csv_auto
 from util.paths import data_dir, outputs_dir
 
-df = read_csv_auto(data_dir() / "raw" / "weather.csv")  # 地点ごとの時間別データ
+# 機器ごとの日次データ（縦持ち。日付が機器の数だけ重複するので、機器 列でグループに分けられる）
+df = pl.read_parquet(data_dir() / "processed" / "dummy" / "train_dataset.parquet")
 done = run_time_series_checks(
-    df, "weather", outputs_dir() / "figures", seasonal_period=24, nlags=72
+    df.select("日付", "機器", "汚れ係数", "圧力損失"),
+    "dummy_hx",
+    outputs_dir() / "figures",
+    moving_average_window=30,
+    seasonal_period=365,
+    nlags=60,
 )
-print(done[:3])  # 例: ['weather_富山:気温(℃)', ...]
+print(done[:3])  # 例: ['dummy_hx_HX01:汚れ係数', ...]
 ```
 
 ### 部品として使う関数

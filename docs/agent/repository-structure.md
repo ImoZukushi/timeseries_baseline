@@ -5,7 +5,7 @@
 | ディレクトリ | 役割 |
 |-------------|------|
 | `src/` | 再利用可能なPythonモジュール（下表） |
-| `configs/experiments/` | モデル学習実験の設定YAML（`scripts/run_experiment.py` 用） |
+| `configs/experiments/` | モデル学習実験の設定YAML（`scripts/run_experiment.py` 用）。`common/` に共通設定（データ・特徴量・CV・指標、LightGBM） |
 | `configs/features/` | 実験設定の `features` から `use: <名前>` で呼び出す特徴量ブロック（[README](../../configs/features/README.md)） |
 | `configs/ensembles/` | アンサンブルの設定YAML（`scripts/run_ensemble.py` 用） |
 | `configs/pipelines/` | 探索 → 学習 → アンサンブルを一括実行するパイプライン設定と、その構成モデルの実験設定（`scripts/run_pipeline.py` 用） |
@@ -44,24 +44,28 @@
 
 ## モデリングの実行手順
 
-一連の流れ（特徴量のPipeline化 → 再帰予測 → Optuna → SHAP → アンサンブル）を
-Pythonから使う例は `scripts/quickstart_delhi_climate.py`（QuickStart）を参照。
-同じ内容をセルごとに解説付きで実行できるノートブック版は `notebook/001_quickstart_delhi_climate.ipynb`。
-同じデータのEDA（`src/eda` の使い方の例）は `scripts/eda_delhi_climate.py` / `notebook/002_eda_delhi_climate.ipynb`。
-熱交換器のダミーデータ（`data/raw/dummy/`、横持ち・複数機器）のEDAは `scripts/eda_heat_exchanger_dummy.py` / `notebook/003_eda_heat_exchanger_dummy.ipynb`。
-その前処理（クリーニング・洗浄の推定・特徴量 → `data/processed/dummy/{train,test}_dataset.parquet`）は
-`scripts/preprocess_heat_exchanger_dummy.py` / `notebook/004_preprocess_heat_exchanger_dummy.ipynb`。
-前処理済みデータセットでの特徴量の探索（LightGBM）は `scripts/run_feature_search.py` / `notebook/005_feature_search_heat_exchanger_dummy.ipynb`。
+このプロジェクトは、熱交換器のダミーデータ（`data/raw/dummy/`、10基の日次運転データ）で汚れ係数を予測する。
+各段階のスクリプトと、同じ内容をセルごとに実行できるノートブックは次のとおり。
+
+| 段階 | スクリプト | ノートブック |
+|---|---|---|
+| ダミーデータの生成（`data/synthetic/`） | `scripts/generate_synthetic_heat_exchanger.py` | ― |
+| EDA（`src/eda` の使い方の例を兼ねる） | `scripts/eda_heat_exchanger_dummy.py` | `notebook/001_eda_heat_exchanger_dummy.ipynb` |
+| 前処理（クリーニング・洗浄の推定・特徴量 → `data/processed/dummy/{train,test}_dataset.parquet`） | `scripts/preprocess_heat_exchanger_dummy.py` | `notebook/002_preprocess_heat_exchanger_dummy.ipynb` |
+| 特徴量の探索（LightGBM でグループの組み合わせ・アブレーションを比べる） | `scripts/run_feature_search.py` | `notebook/003_feature_search_heat_exchanger_dummy.ipynb` |
+| 学習・チューニング・アンサンブル | `scripts/run_experiment.py` / `run_pipeline.py` / `run_ensemble.py` | ― |
 
 ```bash
-# 実験（CV学習・予測・SHAP・MLflow記録）
-uv run python scripts/run_experiment.py --config "configs/experiments/*.yaml"
+# 前処理（データセットの作成）
+uv run python scripts/preprocess_heat_exchanger_dummy.py
+# 実験（CV学習・予測・SHAP・誤差評価・MLflow記録）
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml
 # ハイパーパラメータチューニング付き
-uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml --tune --n-trials 50
-# アンサンブル
-uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.yaml
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml --tune --n-trials 50
+# アンサンブル（hx_lgbm と hx_dummy_baseline を実行した後に）
+uv run python scripts/run_ensemble.py --config configs/ensembles/hx_blend.yaml
 # 各モデルの探索 → 学習 → アンサンブルの一括実行（docs/guides/hyperparameter_tuning.md）
-uv run python scripts/run_pipeline.py --config configs/pipelines/example_ensemble.yaml
+uv run python scripts/run_pipeline.py --config configs/pipelines/hx_ensemble.yaml
 # 特徴量の探索（グループの組み合わせ・アブレーションを LightGBM で比べる）
 uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
 # 実験ログの閲覧

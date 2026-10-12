@@ -157,7 +157,7 @@ hx01 = df.select("日付", pl.col("HX01_薬剤種類").alias("薬剤種類")).jo
 #### 前処理済みデータセット（`data/processed/dummy/`）
 
 `data/raw/dummy/`（このデータと同じ構成）から `scripts/preprocess_heat_exchanger_dummy.py`
-（ノートブック版は `notebook/004_preprocess_heat_exchanger_dummy.ipynb`）で作る、縦持ちのデータセットです。
+（ノートブック版は `notebook/002_preprocess_heat_exchanger_dummy.ipynb`）で作る、縦持ちのデータセットです。
 
 | ファイル | 行 | 内容 |
 |---|---|---|

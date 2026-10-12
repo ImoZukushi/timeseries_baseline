@@ -16,7 +16,7 @@
 Usage:
     uv run python scripts/run_csv_quality_checks.py
     uv run python scripts/run_csv_quality_checks.py --data-subdir interim
-    uv run python scripts/run_csv_quality_checks.py --pattern "wind_0/*.csv"
+    uv run python scripts/run_csv_quality_checks.py --pattern "dummy/*.csv"
     uv run python scripts/run_csv_quality_checks.py --moving-average-window 7 --seasonal-period 12
 """
 

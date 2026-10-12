@@ -35,7 +35,7 @@ from modeling.feature_search import (  # noqa: E402
     run_feature_search,
     validate_patterns,
 )
-from modeling.tracking import MLflowTracker, NullTracker, Tracker  # noqa: E402
+from modeling.tracking import Tracker, make_tracker  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -80,12 +80,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     def tracker_factory(cfg: ExperimentConfig) -> Tracker:
-        if args.no_tracking or not cfg.tracking.enabled:
-            return NullTracker()
-        return MLflowTracker(
-            experiment_name=cfg.tracking.experiment_name or cfg.name,
-            tracking_uri=cfg.tracking.tracking_uri,
-        )
+        return make_tracker(cfg.tracking, cfg.name, enabled=not args.no_tracking)
 
     start = time.perf_counter()
     result = run_feature_search(

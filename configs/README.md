@@ -1,6 +1,7 @@
 # configs
 
-実験・アンサンブル・ハイパーパラメータ探索の設定（YAML）を置くディレクトリです。
+実験・アンサンブル・ハイパーパラメータ探索・特徴量の探索の設定（YAML）を置くディレクトリです。
+同梱の設定は、熱交換器のダミーデータ（前処理済みのデータセット `data/processed/dummy/`）で汚れ係数を予測する例です。
 設定はすべて pydantic で検証されます。未知のキー・型の誤り・矛盾した組み合わせは、学習を始める前にエラーになります。
 
 | ディレクトリ | 内容 | 使うスクリプト |
@@ -15,9 +16,10 @@
 ## 設定どうしの関係
 
 ```
-pipelines/<名前>.yaml ──members──▶ 実験設定 ──base──▶ 共通設定・search_spaces/<モデル>.yaml
-                                      └──use──▶ features/<ブロック>.yaml
-experiments/<名前>.yaml ──base──▶ 共通の実験設定（例: fe_base.yaml）
+experiments/common/hx_dummy.yaml   データ・特徴量・CV・指標の共通設定（下のすべてが base で継承する）
+experiments/<名前>.yaml ──base──▶ experiments/common/*.yaml（または別の実験設定）
+                       └──use──▶ features/<ブロック>.yaml
+pipelines/<名前>.yaml ──members──▶ 構成モデルの実験設定 ──base──▶ experiments/common/hx_dummy.yaml・search_spaces/<モデル>.yaml
 feature_search/<名前>.yaml ──experiment──▶ 共通の実験設定 ──base──▶ ...
                           └──groups[].features の use──▶ features/<ブロック>.yaml
 ensembles/<名前>.yaml ──members──▶ 実行済みの実験の出力（outputs/experiments/）
@@ -32,7 +34,7 @@ ensembles/<名前>.yaml ──members──▶ 実行済みの実験の出力（
 - **展開結果の確認:** 次のコマンドで確認できます。
 
 ```bash
-uv run python -c "import sys, yaml; sys.path.insert(0, 'src'); from pathlib import Path; from modeling.config import load_config_dict; print(yaml.safe_dump(load_config_dict(Path('configs/experiments/fe_date_parts.yaml')), allow_unicode=True, sort_keys=False))"
+uv run python -c "import sys, yaml; sys.path.insert(0, 'src'); from pathlib import Path; from modeling.config import load_config_dict; print(yaml.safe_dump(load_config_dict(Path('configs/experiments/fe_hx_pressure_lags.yaml')), allow_unicode=True, sort_keys=False))"
 ```
 
 ## 関連ドキュメント
@@ -44,5 +46,5 @@ uv run python -c "import sys, yaml; sys.path.insert(0, 'src'); from pathlib impo
 
 ## 注意
 
-- 同梱の例の目的変数 `合計` は仮置きです。コンペの目的変数が決まったら、各設定の `data.target` と `drop_cols` を見直してください。
-- データファイル（`data/`）は git 管理外です。設定は、各自の環境にあるファイルのパスを指します。
+- データファイル（`data/`）は git 管理外です。同梱の設定を使う前に、前処理でデータセットを作ってください（`uv run python scripts/preprocess_heat_exchanger_dummy.py`）。
+- データ・CV・指標を変えるときは `experiments/common/hx_dummy.yaml` だけを直します。実験・パイプライン・特徴量の探索の設定がそろって変わります。

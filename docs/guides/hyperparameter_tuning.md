@@ -36,9 +36,9 @@ configs/
 │   ├── xgboost.yaml
 │   └── linear.yaml
 └── pipelines/
-    ├── example_ensemble.yaml   # パイプライン設定
-    └── example_ensemble/       # その構成モデルの実験設定
-        ├── common.yaml         # 共通設定（データ・CV・指標）
+    ├── hx_ensemble.yaml        # パイプライン設定
+    └── hx_ensemble/            # その構成モデルの実験設定
+        ├── common.yaml         # 共通設定（base: ../../experiments/common/hx_dummy.yaml ＋ 探索向けの設定）
         ├── lgbm.yaml           # base: [common.yaml, ../../search_spaces/lightgbm.yaml]
         ├── xgb.yaml
         └── linear.yaml
@@ -82,64 +82,57 @@ tuning:
 
 ## 2. 構成モデルの実験設定を書く
 
-共通設定（データ・CV・指標）と探索範囲を `base` で継承し、名前と特徴量を書きます。
+共通設定（データ・特徴量・CV・指標）と探索範囲を `base` で継承し、名前を書きます。
+データ・特徴量・CV・指標は、実験設定と同じ `configs/experiments/common/hx_dummy.yaml` を継承します（定義を1か所にまとめるため）。
 
 ```yaml
-# configs/pipelines/example_ensemble/common.yaml
-task: regression
-data:
-  train_path: data/processed/train_with_departure_time.csv
-  target: 合計
-  group_col: 年月日
-  drop_cols: [年月日, 発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]
-cv: {method: group, n_splits: 5, seed: 42}
-metrics: [rmse, mae]
+# configs/pipelines/hx_ensemble/common.yaml
+base: ../../experiments/common/hx_dummy.yaml   # データ・特徴量（薬剤種類のエンコーディング）・CV・指標
 tuning: {n_trials: 30}
 explain: {enabled: false}     # 探索中は SHAP・誤差評価を省いて速くする
 evaluation: {enabled: false}
-tracking: {experiment_name: example_ensemble}
+tracking: {experiment_name: hx_ensemble}
 ```
 
 ```yaml
-# configs/pipelines/example_ensemble/lgbm.yaml
+# configs/pipelines/hx_ensemble/lgbm.yaml
 base: [common.yaml, ../../search_spaces/lightgbm.yaml]
-name: example_ensemble_lgbm
-features:
-  - use: categorical_ordinal
+name: hx_ensemble_lgbm
 ```
 
-構成モデルごとに、特徴量を変えてかまいません。むしろ、性質の違うモデル・特徴量を混ぜる方がアンサンブルの効果が出やすくなります。
-例えば `linear.yaml` は、線形モデルに向くターゲットエンコーディング（`categorical_target`）を使っています。
+構成モデルごとに、特徴量を変えてかまいません（`features` や `data.drop_cols` を構成モデル側で上書きする）。
+むしろ、性質の違うモデル・特徴量を混ぜる方がアンサンブルの効果が出やすくなります。
+線形モデル（`linear.yaml`）は欠損値を内部で中央値補完してから標準化するため、欠損を含むデータセットのまま使えます。
 
 ## 3. パイプライン設定を書く
 
 ```yaml
-# configs/pipelines/example_ensemble.yaml
-name: example_ensemble
+# configs/pipelines/hx_ensemble.yaml
+name: hx_ensemble
 members:                          # パスはこの YAML からの相対パス
-  - config: example_ensemble/lgbm.yaml
+  - config: hx_ensemble/lgbm.yaml
     n_trials: 30                  # study 全体での試行回数の目標（省略時は実験設定の tuning.n_trials）
     timeout: 1800                 # 今回の実行での打ち切り秒数（任意）
-  - config: example_ensemble/xgb.yaml
+  - config: hx_ensemble/xgb.yaml
     n_trials: 30
-  - config: example_ensemble/linear.yaml
+  - config: hx_ensemble/linear.yaml
     tune: false                   # 探索せず、実験設定の model.params で学習する
 ensemble:
   methods: [mean, weighted, stacking]   # すべて実行して比較する
   metrics: null                         # 省略時は構成モデルの metrics（先頭が主指標）
   stacking: {model: {name: linear}}     # stacking のメタモデル
 seed: 42
-tracking: {experiment_name: example_ensemble}
+tracking: {experiment_name: hx_ensemble}
 ```
 
 ## 4. 実行する
 
 ```bash
 # 設定の検証だけ（学習しない）
-uv run python scripts/run_pipeline.py --config configs/pipelines/example_ensemble.yaml --check
+uv run python scripts/run_pipeline.py --config configs/pipelines/hx_ensemble.yaml --check
 
 # 一括実行
-uv run python scripts/run_pipeline.py --config configs/pipelines/example_ensemble.yaml
+uv run python scripts/run_pipeline.py --config configs/pipelines/hx_ensemble.yaml
 ```
 
 | オプション | 内容 |
@@ -168,14 +161,18 @@ uv run python scripts/run_pipeline.py --config configs/pipelines/example_ensembl
 | `experiments/<構成モデル>/<日時>/` | 各構成モデルの実験の出力。`tuning_trials.csv`（全試行）・`tuning_summary.yaml`（study 名・最良パラメータ）・OOF/テスト予測など |
 | `ensembles/<名前>_<方法>/<日時>/` | 統合方法ごとのアンサンブルの出力（`weights.csv`・予測など） |
 
-`summary.csv` の例:
+`summary.csv` の例（`hx_ensemble.yaml` を `--skip-tuning` で実行した結果。探索すると値は変わります）:
 
 | kind | name | rmse | mae | rank |
 |---|---|---|---|---|
-| ensemble | weighted | 0.812 | 0.080 | 1 |
-| ensemble | stacking | 0.813 | 0.080 | 2 |
-| member | example_ensemble_lgbm | 0.815 | 0.081 | 3 |
-| … | … | … | … | … |
+| member | hx_ensemble_lgbm | 0.0941 | 0.0707 | 1 |
+| ensemble | weighted | 0.0950 | 0.0711 | 2 |
+| ensemble | mean | 0.1013 | 0.0781 | 3 |
+| ensemble | stacking | 0.1017 | 0.0759 | 4 |
+| member | hx_ensemble_xgb | 0.1074 | 0.0816 | 5 |
+| member | hx_ensemble_linear | 0.1876 | 0.1423 | 6 |
+
+アンサンブルが単体のモデルより良くなるとは限りません。最良のものが最終モデルとして `final.yaml` に残ります。
 
 テスト予測は、構成モデルの実験設定に `data.test_path` があるときだけ作られます。最終モデルのテスト予測は `final.yaml` の `test_predictions` に入っています。
 
@@ -194,7 +191,7 @@ MLflow には、次のように記録されます。
 
 ```yaml
 base: [common.yaml, ../../search_spaces/lightgbm.yaml]
-name: example_ensemble_lgbm_small_lr
+name: hx_ensemble_lgbm_small_lr
 tuning:
   search_space:
     learning_rate: {type: float, low: 0.005, high: 0.05, log: true}   # この項目だけ変える
@@ -209,12 +206,12 @@ tuning:
 
 ```yaml
 # 試行回数だけ小さくした別のパイプライン（members は土台のファイルからの相対パスのまま使える）
-base: example_ensemble.yaml
-name: example_ensemble_small
+base: hx_ensemble.yaml
+name: hx_ensemble_small
 members:
-  - {config: example_ensemble/lgbm.yaml, n_trials: 3}
-  - {config: example_ensemble/xgb.yaml, n_trials: 3}
-  - {config: example_ensemble/linear.yaml, n_trials: 3}
+  - {config: hx_ensemble/lgbm.yaml, n_trials: 3}
+  - {config: hx_ensemble/xgb.yaml, n_trials: 3}
+  - {config: hx_ensemble/linear.yaml, n_trials: 3}
 ```
 
 `members` はリストなので、`base` から継承すると全体が置き換わります。試行回数だけを変えたいときも、全構成モデルを書きます。
@@ -225,7 +222,7 @@ members:
 試行回数と study の扱いは、パイプラインと同じです。
 
 ```bash
-uv run python scripts/run_experiment.py --config configs/pipelines/example_ensemble/lgbm.yaml --tune --n-trials 30
+uv run python scripts/run_experiment.py --config configs/pipelines/hx_ensemble/lgbm.yaml --tune --n-trials 30
 ```
 
 ---

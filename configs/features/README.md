@@ -8,19 +8,19 @@
 ブロックのファイルには `steps`（`features` と同じ書式のリスト）を書きます。`description` は任意です。
 
 ```yaml
-# configs/features/categorical_ordinal.yaml
-description: 列車番号・停車駅名の序数エンコーディング
+# configs/features/hx_chemical_ordinal.yaml
+description: 薬剤種類の序数エンコーディング（熱交換器ダミーデータ）
 steps:
   - class: feature_engineering.categorical.PolarsOrdinalEncoder
-    params: {variables: [列車番号, 停車駅名]}
+    params: {variables: [薬剤種類]}
 ```
 
 実験設定では、`features` の要素に `use` で書きます。展開されたステップは、並んだ順に Pipeline に入ります。
 
 ```yaml
 features:
-  - use: categorical_ordinal            # configs/features/categorical_ordinal.yaml
-  - use: date_parts
+  - use: hx_chemical_ordinal            # configs/features/hx_chemical_ordinal.yaml
+  - use: hx_pressure_drop_lags
   - use: ../features/my_block.yaml      # .yaml で終わる値は、この YAML からの相対パス
   - class: modeling.pipeline.DropColumns  # 通常のステップと混ぜてよい
     params: {columns: [不要な列]}
@@ -33,11 +33,8 @@ features:
 
 | ブロック | 内容 |
 |---|---|
-| `categorical_ordinal` | 列車番号・停車駅名の序数エンコーディング |
-| `categorical_target` | 出現の少ない列車番号を `Other` にまとめてから、列車番号・停車駅名をターゲットエンコーディング |
-| `hx_chemical_ordinal` | 熱交換器ダミーデータ: 薬剤種類の序数エンコーディング（`configs/feature_search/hx_dummy.yaml` で使用） |
-| `hx_pressure_drop_lags` | 熱交換器ダミーデータ: 圧力損失のラグ（1・7・14行前）と30行の移動平均（機器番号ごと） |
-| `date_parts` | 年月日から月・日・曜日を作り、年月日を削除する（使う実験では `data.drop_cols` から `年月日` を外す） |
+| `hx_chemical_ordinal` | 熱交換器ダミーデータ: 薬剤種類の序数エンコーディング（`configs/experiments/common/hx_dummy.yaml`・特徴量の探索のグループ `chemical_type` で使用） |
+| `hx_pressure_drop_lags` | 熱交換器ダミーデータ: 圧力損失のラグ（1・7・14行前）と30行の移動平均（機器番号ごと。`fe_hx_pressure_lags`・グループ `pressure_lags` で使用） |
 
 ほかの設定ディレクトリとの関係は [configs/README.md](../README.md) を参照してください。
 使える transformer は [docs/modules/feature_engineering.md](../../docs/modules/feature_engineering.md) を参照してください。

@@ -44,7 +44,7 @@ uv run python scripts/run_feature_search.py --config configs/feature_search/hx_d
 uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
 ```
 
-同じ内容をセルごとに実行できるノートブック版は `notebook/005_feature_search_heat_exchanger_dummy.ipynb` です
+同じ内容をセルごとに実行できるノートブック版は `notebook/003_feature_search_heat_exchanger_dummy.ipynb` です
 （papermill のパラメータ `CONFIG_PATH`・`PATTERNS`・`ABLATION`・`TRACKING`・`OUTPUT_ROOT` がスクリプトの引数に対応します）。
 
 | オプション | 内容 |
@@ -62,7 +62,7 @@ configs/
 ├── feature_search/
 │   ├── hx_dummy.yaml              # 探索の設定（グループ・パターン・アブレーション）
 │   └── hx_dummy/
-│       └── experiment.yaml        # 全パターン共通の実験設定（データ・CV・モデル・指標）
+│       └── experiment.yaml        # 全パターン共通の実験設定（experiments/common/ を継承）
 └── features/
     ├── hx_chemical_ordinal.yaml   # グループから use で呼ぶ特徴量ブロック
     └── hx_pressure_drop_lags.yaml
@@ -76,26 +76,28 @@ configs/
 `ExperimentConfig`（[modeling.md](../modules/modeling.md#設定リファレンスexperimentconfig)）から、`name` と `data.feature_cols` を除いたものです。
 `base` での継承や、`features`（全パターンに入るステップ）も書けます。
 
+同梱の設定は、実験設定と同じ共通設定（データ・CV・指標は `configs/experiments/common/hx_dummy.yaml`、
+LightGBM は `configs/experiments/common/lgbm.yaml`）を継承し、探索向けの差分だけを書いています。
+
 ```yaml
 # configs/feature_search/hx_dummy/experiment.yaml
-task: regression
-data:
-  train_path: data/processed/dummy/train_dataset.parquet
-  test_path: data/processed/dummy/test_dataset.parquet
-  target: 汚れ係数
-  time_col: 日付
-cv:
-  method: time_cutoff
-  cutoffs: ["2022-01-01", "2023-01-01", "2024-01-01"]
-  valid_end: "2025-01-01"
-model:
-  name: lightgbm
-  params: {n_estimators: 3000, learning_rate: 0.05, num_leaves: 31}
-  early_stopping_rounds: 100
-metrics: [rmse, mae]          # 先頭が比較に使う主指標
+base: [../../experiments/common/hx_dummy.yaml, ../../experiments/common/lgbm.yaml]
+# 共通設定の features（薬剤種類のエンコーディング）は、グループ chemical_type のステップとして入れる
+features: []
 explain: {enabled: false}     # 探索を速く回すため SHAP・誤差評価は無効
 evaluation: {enabled: false}
 ```
+
+継承した設定の要点:
+
+| 項目 | 値 |
+|---|---|
+| データ | `data/processed/dummy/{train,test}_dataset.parquet`、目的変数 `汚れ係数`、`time_col: 日付` |
+| CV | `time_cutoff`（2022・2023・2024年をそれぞれ検証、それより前の全期間で学習） |
+| 指標 | `[rmse, mae]`（先頭が比較に使う主指標） |
+| モデル | LightGBM（`n_estimators: 3000`・`learning_rate: 0.05`・early stopping 100） |
+
+`data.drop_cols` も継承されますが、各パターンでは `data.feature_cols`（グループの列）が優先されます。
 
 ## 2. 探索の設定
 

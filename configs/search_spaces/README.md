@@ -7,11 +7,9 @@
 - **`tuning.search_space`:** 探索範囲。
 
 ```yaml
-# 実験設定（例: configs/pipelines/example_ensemble/lgbm.yaml）
+# 実験設定（例: configs/pipelines/hx_ensemble/lgbm.yaml）
 base: [common.yaml, ../../search_spaces/lightgbm.yaml]
-name: example_ensemble_lgbm
-features:
-  - use: categorical_ordinal
+name: hx_ensemble_lgbm
 ```
 
 ## ファイル

@@ -1,0 +1,6 @@
+# 熱交換器ダミーデータの LightGBM 回帰（前処理済みデータセットの全列）。
+# SHAP と誤差評価も作る、モデリングの基本の例。
+#
+# 実行: uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml
+base: [common/hx_dummy.yaml, common/lgbm.yaml]
+name: hx_lgbm

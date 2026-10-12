@@ -58,11 +58,11 @@ YAML ──load_experiment_config──▶ ExperimentConfig（pydantic で検証
 # 実験（CV学習・予測・SHAP・誤差評価・MLflow記録）。--config は複数・globパターン可
 uv run python scripts/run_experiment.py --config "configs/experiments/*.yaml"
 # チューニング付き（設定の tuning.enabled: true でも可）
-uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml --tune --n-trials 50
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml --tune --n-trials 50
 # その他: --no-tracking（MLflowに記録しない）, --no-explain（SHAPなし）, --output-root, --optuna-dir
 
 # アンサンブル（構成要素の実験を実行した後に）
-uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.yaml
+uv run python scripts/run_ensemble.py --config configs/ensembles/hx_blend.yaml
 
 # 特徴量の探索（グループの組み合わせ・アブレーションを単一モデルで比べる）
 uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
@@ -301,11 +301,12 @@ YAML の読み込み（`load_experiment_config` / `load_ensemble_config` → `lo
 `base` に書いた YAML を土台にして、書いたキーだけを上書きします。
 
 ```yaml
-# configs/experiments/fe_target_encoding.yaml
-base: fe_base.yaml          # この YAML からの相対パス
-name: fe_target_encoding    # 出力ディレクトリ・MLflow の run 名になるので、パターンごとに変える
+# configs/experiments/fe_hx_pressure_lags.yaml
+base: fe_hx_base.yaml          # この YAML からの相対パス
+name: fe_hx_pressure_lags      # 出力ディレクトリ・MLflow の run 名になるので、パターンごとに変える
 features:
-  - use: categorical_target
+  - use: hx_chemical_ordinal
+  - use: hx_pressure_drop_lags
 ```
 
 | 書き方 | 結果 |
@@ -323,7 +324,7 @@ features:
 
 | 値 | 参照するファイル |
 |---|---|
-| 拡張子なしの名前（`categorical_target`） | `configs/features/categorical_target.yaml` |
+| 拡張子なしの名前（`hx_pressure_drop_lags`） | `configs/features/hx_pressure_drop_lags.yaml` |
 | `.yaml` で終わる値（`../blocks/x.yaml`） | `use` を書いた YAML からの相対パス |
 
 ブロックの書き方と一覧は [configs/features/README.md](../../configs/features/README.md) を参照してください。
@@ -332,21 +333,23 @@ features:
 
 ### 探索の進め方
 
-`configs/experiments/fe_*.yaml` に、そのまま回せる雛形があります。
+`configs/experiments/fe_hx_*.yaml` に、そのまま回せる雛形があります（熱交換器ダミーデータ）。
 
 | ファイル | 内容 |
 |---|---|
-| `fe_base.yaml` | 共通設定とベースライン（序数エンコーディング）。速く回すため SHAP・誤差評価は無効。MLflow の実験名は `feature_search` |
-| `fe_target_encoding.yaml` | エンコーディングを、低頻度まとめ＋ターゲットエンコーディングに替える |
-| `fe_date_parts.yaml` | 日付の成分（月・日・曜日）を加える。`data.drop_cols` だけを上書きする例を兼ねる |
+| `fe_hx_base.yaml` | 土台（`hx_lgbm.yaml` を継承）。速く回すため SHAP・誤差評価は無効。MLflow の実験名は `feature_exploration_hx` |
+| `fe_hx_pressure_lags.yaml` | CV の中で作る圧力損失のラグ・移動平均を加える（`use` の例） |
+| `fe_hx_no_flags.yaml` | クリーニングの印の列を外す。`data.drop_cols` だけを上書きする例を兼ねる |
 
 1. 試したい特徴量をブロック（`configs/features/*.yaml`）にする。
-2. `fe_base.yaml` を `base` にした YAML を作り、`name` と `features` だけを書く。
+2. `fe_hx_base.yaml` を `base` にした YAML を作り、`name` と `features`（または `data.drop_cols`）だけを書く。
 3. まとめて実行する。
    ```bash
-   uv run python scripts/run_experiment.py --config "configs/experiments/fe_*.yaml"
+   uv run python scripts/run_experiment.py --config "configs/experiments/fe_hx_*.yaml"
    ```
-4. MLflow の実験 `feature_search` で `cv_mean_rmse` などを並べて比較する。
+4. MLflow の実験 `feature_exploration_hx` で `cv_mean_rmse` などを並べて比較する。
+
+列のグループの組み合わせやアブレーションを一括で比べる場合は、`scripts/run_feature_search.py`（[ガイド](../guides/feature_search.md)）を使います。
 5. 有望なパターンだけ、`explain: {enabled: true}`・`evaluation: {enabled: true}` を上書きして SHAP・誤差評価を見る。
 
 全パターンが同じデータ・CV分割（`cv` と `seed`）を使うので、スコアの差は特徴量の違いによるものです。
@@ -440,7 +443,7 @@ class RandomForestSpec(ModelSpec):
 name: blend
 task: regression
 members:
-  - {name: lgbm, experiment: example_lgbm}         # outputs/experiments/example_lgbm/ の最新の実行
+  - {name: lgbm, experiment: hx_lgbm}              # outputs/experiments/hx_lgbm/ の最新の実行
   - {name: xgb, path: outputs/experiments/x/20260101_000000_000000}  # ディレクトリを直接指定
   - {name: nn, run_id: 0123abcd...}                # MLflow の run の artifact から取得
 method: weighted      # mean / rank_mean（二値のみ）/ weighted / stacking

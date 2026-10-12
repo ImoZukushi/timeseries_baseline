@@ -1,0 +1,19 @@
+# 熱交換器ダミーデータで、各モデルを Optuna で探索 → 最良パラメータで学習 → 複数の方法でアンサンブルして比較する。
+#
+# 実行: uv run python scripts/run_pipeline.py --config configs/pipelines/hx_ensemble.yaml
+# 結果: outputs/pipelines/hx_ensemble/<日時>/summary.csv（比較表）・final.yaml（最終モデル）
+#
+# n_trials は study 全体での試行回数の目標。再実行すると足りない分だけ探索し、達していれば
+# 探索を飛ばして学習だけを行う。探索範囲・特徴量・データを変えると自動で新しい study になる。
+name: hx_ensemble
+members:   # パスはこの YAML からの相対パス
+  - config: hx_ensemble/lgbm.yaml
+    n_trials: 30
+  - config: hx_ensemble/xgb.yaml
+    n_trials: 30
+  - config: hx_ensemble/linear.yaml
+    n_trials: 20
+ensemble:
+  methods: [mean, weighted, stacking]   # すべて実行し、交差検証した OOF スコアで比較する
+  stacking: {model: {name: linear}}
+tracking: {experiment_name: hx_ensemble}

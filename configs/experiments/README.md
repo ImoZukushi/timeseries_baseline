@@ -4,9 +4,9 @@
 CV学習 → 予測の保存 → SHAP → 誤差評価 → MLflow への記録までを、まとめて行います。
 
 ```bash
-uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml
-uv run python scripts/run_experiment.py --config "configs/experiments/fe_*.yaml"      # 複数（glob）
-uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml --tune --n-trials 30
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml
+uv run python scripts/run_experiment.py --config "configs/experiments/fe_hx_*.yaml"   # 複数（glob）
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml --tune --n-trials 30
 ```
 
 | オプション | 内容 |
@@ -29,15 +29,21 @@ uv run python scripts/run_experiment.py --config configs/experiments/example_lgb
 
 ## ファイル
 
+熱交換器のダミーデータ（前処理済みのデータセット）で汚れ係数を予測する設定です。
+先に `scripts/preprocess_heat_exchanger_dummy.py` でデータセットを作ってください。
+
 | ファイル | 内容 |
 |---|---|
-| `example_lgbm.yaml` | LightGBM 回帰の動作確認用（group CV、early stopping） |
-| `example_dummy.yaml` | 定数予測のベースライン（`example_lgbm` と比べて、最低限超えるべき水準を確認する） |
-| `fe_base.yaml` | 特徴量の探索の共通設定とベースライン（SHAP・誤差評価は無効、MLflow の実験名 `feature_search`） |
-| `fe_target_encoding.yaml` | `base: fe_base.yaml` ＋ 低頻度まとめ＋ターゲットエンコーディング |
-| `fe_date_parts.yaml` | `base: fe_base.yaml` ＋ 日付の成分（`data.drop_cols` だけを上書きする例を兼ねる） |
+| `common/hx_dummy.yaml` | 共通設定（データ・特徴量・年ごとの時系列 CV・指標）。`name` が無い部品なので、glob に入らないサブディレクトリに置く |
+| `common/lgbm.yaml` | LightGBM の設定（探索しない場合の既定のパラメータ） |
+| `hx_lgbm.yaml` | LightGBM 回帰。SHAP・誤差評価も作る基本の例 |
+| `hx_dummy_baseline.yaml` | 定数予測のベースライン（モデルが最低限超えるべき水準） |
+| `fe_hx_base.yaml` | 特徴量の探索（`base` / `use` の例）の土台（`hx_lgbm` ＋ SHAP・誤差評価なし、MLflow の実験名 `feature_exploration_hx`） |
+| `fe_hx_pressure_lags.yaml` | `base: fe_hx_base.yaml` ＋ CV の中で作る圧力損失のラグ（`use` の例） |
+| `fe_hx_no_flags.yaml` | `base: fe_hx_base.yaml` ＋ クリーニングの印の列を外す（`data.drop_cols` だけを上書きする例） |
 
-`example_lgbm` / `example_dummy` は、`configs/ensembles/example_blend.yaml` の構成要素です。
+`hx_lgbm` / `hx_dummy_baseline` は、`configs/ensembles/hx_blend.yaml` の構成要素です。
+列のグループの組み合わせ・アブレーションを一括で比べる場合は、`configs/feature_search/` を使います。
 
 ## 最小の例
 
@@ -45,36 +51,40 @@ uv run python scripts/run_experiment.py --config configs/experiments/example_lgb
 name: my_experiment          # 出力ディレクトリ名・MLflow の run 名（実験ごとに変える）
 task: regression             # binary / multiclass / regression / time_series
 data:
-  train_path: data/processed/train_with_departure_time.csv
-  target: 合計
-  group_col: 年月日
-  drop_cols: [年月日, 発車時刻]
+  train_path: data/processed/dummy/train_dataset.parquet
+  target: 汚れ係数
+  time_col: 日付
+  drop_cols: [日付, 機器]
 features:
-  - use: categorical_ordinal # configs/features/categorical_ordinal.yaml
-cv: {method: group, n_splits: 5, seed: 42}
+  - use: hx_chemical_ordinal # configs/features/hx_chemical_ordinal.yaml
+cv:
+  method: time_cutoff
+  cutoffs: ["2022-01-01", "2023-01-01", "2024-01-01"]
+  valid_end: "2025-01-01"
 model:
   name: lightgbm
-  params: {n_estimators: 2000, learning_rate: 0.05}
+  params: {n_estimators: 3000, learning_rate: 0.05}
   early_stopping_rounds: 100
 metrics: [rmse, mae]         # 先頭が主指標
 ```
 
-差分だけを書く場合（特徴量の探索など）は、`base` を使います。
+共通設定を使い、差分だけを書く場合は `base` を使います。
 
 ```yaml
-base: fe_base.yaml
-name: fe_my_trial
-features:
-  - use: categorical_ordinal
-  - use: date_parts
+base: [common/hx_dummy.yaml, common/lgbm.yaml]
+name: hx_lgbm_lr002
+model:
+  params: {learning_rate: 0.02}
 ```
 
 ## 書くときの注意
 
 - **`name`:** パターンごとに変えます。同じ名前だと出力ディレクトリ・MLflow の run・Optuna の study が混ざって見づらくなります。
 - **比べるときの CV:** 比べる実験どうしで `cv`（と `seed`）を変えないでください。スコアの差が、比べたいものの差でなくなります。
-- **リーク:** 目的変数の内訳など、予測時に使えない列は `drop_cols` で除きます。例の `フェンダー部分(…)`・`台車部分` は `合計` の内訳です。
-- **部品の置き場所:** このディレクトリには、単独で実行できる設定だけを置きます。`base` 専用の部品（`name` や `model` の無いファイル）を置くと、`--config "configs/experiments/*.yaml"` で検証エラーになります。部品は `configs/search_spaces/` やパイプラインの下に置いてください。
+- **リーク:** 予測時に使えない列は `drop_cols` で除きます。前処理済みのデータセットは目的変数を特徴量の計算に使っていませんが、
+  外れ値の判定・補間・洗浄の推定にはその日より後の特徴量を使っています（[データカタログ](../../docs/agent/data-catalog.md)）。
+- **部品の置き場所:** このディレクトリの直下には、単独で実行できる設定だけを置きます。`base` 専用の部品（`name` や `model` の無いファイル）は
+  `common/` などのサブディレクトリに置いてください（`--config "configs/experiments/*.yaml"` で検証エラーにならないように）。
 
 全項目は [docs/modules/modeling.md](../../docs/modules/modeling.md#設定リファレンスexperimentconfig) を参照してください。
 特徴量の探索の進め方は [docs/guides/feature_exploration.md](../../docs/guides/feature_exploration.md) にあります。

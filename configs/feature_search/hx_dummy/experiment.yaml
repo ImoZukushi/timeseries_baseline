@@ -1,30 +1,10 @@
-# 熱交換器ダミーデータ（前処理済み）の特徴量の探索で、全パターンに共通の実験設定。
-# name と data.feature_cols は書かない（探索の設定のパターンごとに決まる）。
-#
-# データ: scripts/preprocess_heat_exchanger_dummy.py で作る縦持ちのデータセット（1行 = 1日 × 1機器）。
-# CV: テスト（翌1年分の予測）に合わせ、年ごとに「それより前の全期間で学習 → 翌1年で検証」する。
-task: regression
-data:
-  train_path: data/processed/dummy/train_dataset.parquet
-  test_path: data/processed/dummy/test_dataset.parquet
-  target: 汚れ係数
-  time_col: 日付
-cv:
-  method: time_cutoff
-  cutoffs: ["2022-01-01", "2023-01-01", "2024-01-01"]   # 検証期間の開始（3 fold）
-  valid_end: "2025-01-01"
-model:
-  name: lightgbm
-  params:
-    n_estimators: 3000
-    learning_rate: 0.05
-    num_leaves: 31
-    min_child_samples: 20
-    subsample: 0.8
-    subsample_freq: 1
-    colsample_bytree: 0.8
-  early_stopping_rounds: 100   # 検証 fold で打ち切るため、スコアはわずかに楽観的（全パターン共通）
-metrics: [rmse, mae]
+# 熱交換器ダミーデータの特徴量の探索（configs/feature_search/hx_dummy.yaml）で、全パターンに共通の実験設定。
+# データ・CV・指標・LightGBM の設定は configs/experiments/common/ から継承する。
+# data.feature_cols は探索の設定のパターンごとに決まる（共通設定の drop_cols は使われない）。
+base: [../../experiments/common/hx_dummy.yaml, ../../experiments/common/lgbm.yaml]
+# 共通設定の features（薬剤種類のエンコーディング）は、探索ではグループ chemical_type の
+# ステップとして入れる（薬剤種類を使わないパターンで、無い列をエンコードしないように）
+features: []
 # 探索を速く回すため SHAP・誤差評価は無効にする（有望なパターンだけ overrides で有効にする）
 explain: {enabled: false}
 evaluation: {enabled: false}

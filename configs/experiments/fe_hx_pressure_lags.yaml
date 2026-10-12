@@ -1,0 +1,6 @@
+# 土台に、CV の中で作る圧力損失のラグ・移動平均を加える（features は置き換えなので土台の分も書く）
+base: fe_hx_base.yaml
+name: fe_hx_pressure_lags
+features:
+  - use: hx_chemical_ordinal     # 土台（common/hx_dummy.yaml）の分
+  - use: hx_pressure_drop_lags   # 追加分

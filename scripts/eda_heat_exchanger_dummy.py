@@ -454,7 +454,8 @@ def chemical_share(long: pl.DataFrame) -> pl.DataFrame:
 # --- 図 ------------------------------------------------------------------------------
 
 
-def _setup_style() -> None:
+def setup_style() -> None:
+    """図の見た目（seaborn のテーマと日本語フォント）をそろえる。"""
     sns.set_theme(style="whitegrid", palette="muted", font_scale=1.0)
     # sns.set_theme がフォント設定を上書きするため、その後に日本語フォントを設定する
     ensure_japanese_font()
@@ -462,7 +463,7 @@ def _setup_style() -> None:
 
 def plot_fouling_timeseries(long: pl.DataFrame, events: pl.DataFrame) -> plt.Figure:
     """機器ごとの汚れ係数の推移（10段）。洗浄・定期修理・突発停止の期間を色で重ねる。"""
-    _setup_style()
+    setup_style()
     fig, axes = plt.subplots(
         len(EXCHANGERS),
         1,
@@ -497,7 +498,7 @@ def plot_fouling_timeseries(long: pl.DataFrame, events: pl.DataFrame) -> plt.Fig
 
 def plot_fouling_vs_pressure_drop(long: pl.DataFrame) -> plt.Figure:
     """機器ごとの「汚れ係数 vs 圧力損失」の散布図（2行5列）。外れ値に強い順位相関を表示する。"""
-    _setup_style()
+    setup_style()
     fig, axes = plt.subplots(2, 5, figsize=(18, 7), sharex=True, constrained_layout=True)
     for ax, unit in zip(axes.flat, EXCHANGERS, strict=True):
         data = long.filter(pl.col(UNIT_COL) == unit).select(TARGET, "圧力損失").drop_nulls()
@@ -518,7 +519,7 @@ def plot_fouling_vs_pressure_drop(long: pl.DataFrame) -> plt.Figure:
 
 def plot_growth_drivers(growth: pl.DataFrame) -> plt.Figure:
     """汚れ係数の増え方と、薬剤・原油の性状・流量の関係（3枚組）。"""
-    _setup_style()
+    setup_style()
     fig, axes = plt.subplots(1, 3, figsize=(18, 5), constrained_layout=True)
     scaled = growth.with_columns((pl.col("growth") * 1000).alias("growth_1000"))
     # 1. 薬剤ごとの増え方（箱ひげ図。1日ごとの値は測定誤差でばらつくので中央値・四分位で見る）
@@ -566,7 +567,7 @@ def plot_growth_drivers(growth: pl.DataFrame) -> plt.Figure:
 
 def plot_train_test_distributions(train_long: pl.DataFrame, test_long: pl.DataFrame) -> plt.Figure:
     """学習期間とテスト期間の特徴量の分布（運転中の日、全機器）を重ねて比べる。"""
-    _setup_style()
+    setup_style()
     columns = ("圧力損失", "高温側流量", "低温側流量", "原油A比率", "原油B比率", "原油C比率")
     fig, axes = plt.subplots(2, 3, figsize=(16, 8), constrained_layout=True)
     for ax, col in zip(axes.flat, columns, strict=True):

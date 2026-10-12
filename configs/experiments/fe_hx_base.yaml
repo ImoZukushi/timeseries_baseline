@@ -1,0 +1,8 @@
+# 特徴量の探索（base / use の例）の土台。fe_hx_*.yaml はこの設定を base にして差分だけを書く。
+# グループの組み合わせ・アブレーションを一括で比べる場合は configs/feature_search/ を使う。
+base: hx_lgbm.yaml
+name: fe_hx_base
+# 探索を速く回すため SHAP・誤差評価は無効にし、MLflow の実験名をまとめる
+explain: {enabled: false}
+evaluation: {enabled: false}
+tracking: {experiment_name: feature_exploration_hx}

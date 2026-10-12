@@ -16,9 +16,12 @@ import subprocess
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from util.paths import get_repo_root
+
+if TYPE_CHECKING:
+    from modeling.config import TrackingConfig
 
 # MLflow import時の案内メッセージを抑制する
 os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
@@ -141,6 +144,25 @@ class MLflowTracker:
         """実行中のrun ID。"""
         run = self._mlflow.active_run()
         return None if run is None else str(run.info.run_id)
+
+
+def make_tracker(tracking: TrackingConfig, default_name: str, enabled: bool = True) -> Tracker:
+    """設定の `tracking` から実験ログの記録先を作る。
+
+    Args:
+        tracking: 実験・アンサンブルなどの設定の `tracking`。
+        default_name: `tracking.experiment_name` が無いときの MLflow の実験名（通常は設定の name）。
+        enabled: False なら設定によらず記録しない（CLI の `--no-tracking` に使う）。
+
+    Returns:
+        記録しない場合は `NullTracker`、記録する場合は `MLflowTracker`。
+    """
+    if not (enabled and tracking.enabled):
+        return NullTracker()
+    return MLflowTracker(
+        experiment_name=tracking.experiment_name or default_name,
+        tracking_uri=tracking.tracking_uri,
+    )
 
 
 _INVALID_METRIC_KEY_CHARS = re.compile(r"[^0-9A-Za-z_\-. /]")

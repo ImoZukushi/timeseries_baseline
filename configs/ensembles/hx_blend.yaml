@@ -1,0 +1,11 @@
+# 熱交換器ダミーデータのアンサンブルの例。先に2つの実験を実行してから使う:
+#   uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml configs/experiments/hx_dummy_baseline.yaml
+#   uv run python scripts/run_ensemble.py --config configs/ensembles/hx_blend.yaml
+# 構成要素は同じ学習データ・同じCV分割で作られている必要がある（どちらも common/hx_dummy.yaml を継承）。
+name: hx_blend
+task: regression
+members:
+  - {name: lgbm, experiment: hx_lgbm}               # outputs/experiments/hx_lgbm/ の最新結果
+  - {name: baseline, experiment: hx_dummy_baseline}
+method: weighted
+metrics: [rmse, mae]

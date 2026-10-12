@@ -21,7 +21,7 @@
 ```python
 from util.paths import data_dir, ensure_parent_dir, outputs_dir, sanitize_filename_component
 
-train_path = data_dir() / "raw" / "DailyDelhiClimateTrain.csv"
+train_path = data_dir() / "raw" / "dummy" / "train.csv"
 # 列名などをファイル名に使うときは、禁止文字を置き換えてから使う
 out_path = ensure_parent_dir(
     outputs_dir() / "tables" / f"{sanitize_filename_component('風速(m/s)')}.csv"
@@ -38,7 +38,7 @@ CSVを読み込み、次の処理をまとめて行います。
 - **日時列:** 文字列の列のうち、決まった書式に95%以上一致する列を Datetime 型に変換します。
   対応する書式は `%Y-%m-%dT%H:%M:%S%.f`（ISO 形式。polars の `write_csv` が書き出す形）/ `%Y-%m-%d %H:%M:%S` / `%Y-%m-%d` /
   `%Y/%m/%d %H:%M:%S` / `%Y/%m/%d %H:%M` / `%Y/%m/%d` です。
-- **欠測記号:** `*` を欠損（null）として読みます。`wind_*.csv` の風速・風向で使われています。
+- **欠測記号:** `*` を欠損（null）として読みます（気象観測データなどで欠測を `*` で表す CSV 向け）。
 - **大容量ファイル:** 30MBを超え、ヘッダ以外がASCII文字だけのファイルは、全文をデコードせずに読みます。
 
 ### `scan_csv_auto(path, datetime_sample_rows=1000) -> pl.LazyFrame`
@@ -55,13 +55,14 @@ import polars as pl
 from util.csv_io import read_csv_auto, scan_csv_auto
 from util.paths import data_dir
 
-weather = read_csv_auto(data_dir() / "raw" / "weather.csv")  # CP932・日時列は自動変換
+train = read_csv_auto(data_dir() / "raw" / "dummy" / "train.csv")  # 日付の列は Datetime 型になる
 
-# 580MBの秒単位データも、全行を読まずに集計できる
-wind = scan_csv_auto(data_dir() / "raw" / "wind_0" / "下条川.csv")
-daily_max = (
-    wind.group_by(pl.col("年月日時").dt.date().alias("date"))
-    .agg(pl.col("風速(瞬時)").max())
+# 大きなCSVも、全行を読まずに集計できる
+lazy = scan_csv_auto(data_dir() / "raw" / "dummy" / "train.csv")
+monthly_mean = (
+    lazy.group_by(pl.col("日付").dt.truncate("1mo").alias("month"))
+    .agg(pl.col("HX01_汚れ係数").mean())
+    .sort("month")
     .collect()
 )
 ```

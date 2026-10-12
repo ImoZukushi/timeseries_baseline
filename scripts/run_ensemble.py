@@ -5,7 +5,7 @@
 `outputs/ensembles/{アンサンブル名}/{実行日時}/` に保存され、MLflowにも記録される。
 
 Usage:
-    uv run python scripts/run_ensemble.py --config configs/ensembles/example_blend.yaml
+    uv run python scripts/run_ensemble.py --config configs/ensembles/hx_blend.yaml
     uv run python scripts/run_ensemble.py --config configs/ensembles/blend.yaml --no-tracking
 """
 
@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from modeling.config import load_ensemble_config
 from modeling.ensemble import run_ensemble
-from modeling.tracking import MLflowTracker, NullTracker, Tracker
+from modeling.tracking import make_tracker
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -42,12 +42,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = load_ensemble_config(args.config)
-    tracker: Tracker = NullTracker()
-    if not args.no_tracking and config.tracking.enabled:
-        tracker = MLflowTracker(
-            experiment_name=config.tracking.experiment_name or config.name,
-            tracking_uri=config.tracking.tracking_uri,
-        )
+    tracker = make_tracker(config.tracking, config.name, enabled=not args.no_tracking)
     result = run_ensemble(
         config,
         tracker=tracker,

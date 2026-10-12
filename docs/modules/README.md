@@ -68,14 +68,16 @@ from modeling.config import ExperimentConfig
 
 | 実例 | 内容 |
 |---|---|
-| `scripts/quickstart_delhi_climate.py` / `notebook/001_quickstart_delhi_climate.ipynb` | 再帰予測・Optuna・SHAP・誤差評価・アンサンブルの一連の流れ |
-| `scripts/eda_delhi_climate.py` / `notebook/002_eda_delhi_climate.ipynb` | `eda` の使い方 |
-| `configs/experiments/*.yaml` / `configs/ensembles/*.yaml` | 実験・アンサンブルの設定の例 |
+| `scripts/eda_heat_exchanger_dummy.py` / `notebook/001_eda_heat_exchanger_dummy.ipynb` | `eda`（品質確認・時系列診断）の使い方 |
+| `scripts/preprocess_heat_exchanger_dummy.py` / `notebook/002_preprocess_heat_exchanger_dummy.ipynb` | `feature_engineering` を使った前処理・データセットの作成 |
+| `scripts/run_feature_search.py` / `notebook/003_feature_search_heat_exchanger_dummy.ipynb` | `modeling.feature_search` による特徴量の比較 |
+| `configs/experiments/*.yaml` / `configs/ensembles/*.yaml` / `configs/pipelines/*.yaml` | 実験・アンサンブル・探索パイプラインの設定の例（熱交換器ダミーデータ） |
 | `tests/test_*.py` | 各関数の細かな挙動（境界条件・入力の形） |
 
 作業別のガイド:
 
 - [特徴量の探索（設定の継承・特徴量ブロック）](../guides/feature_exploration.md)
+- [特徴量の探索（グループ・アブレーション）](../guides/feature_search.md)
 - [ハイパーパラメータの探索とアンサンブル](../guides/hyperparameter_tuning.md)
 
 ディレクトリ全体の構成は [../agent/repository-structure.md](../agent/repository-structure.md) を参照してください。

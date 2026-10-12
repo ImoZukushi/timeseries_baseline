@@ -18,8 +18,8 @@
 
 | 仕組み | 書き方 | 役割 |
 |---|---|---|
-| 設定の継承 | `base: fe_base.yaml` | 共通部分を1か所に置き、各パターンは**差分だけ**を書く |
-| 特徴量ブロック | `features: [{use: categorical_target}]` | 特徴量ステップのまとまりに名前を付け、**部品として差し替える** |
+| 設定の継承 | `base: fe_hx_base.yaml` | 共通部分を1か所に置き、各パターンは**差分だけ**を書く |
+| 特徴量ブロック | `features: [{use: hx_pressure_drop_lags}]` | 特徴量ステップのまとまりに名前を付け、**部品として差し替える** |
 
 展開は、検証（pydantic）の前に行います。展開後は従来と同じ設定になるので、学習・予測・出力の処理は何も変わりません。
 
@@ -32,44 +32,52 @@
 ```
 configs/
 ├── experiments/
-│   ├── fe_base.yaml              # 探索の共通設定（ベースライン）
-│   ├── fe_target_encoding.yaml   # base: fe_base.yaml ＋ 差分
-│   └── fe_date_parts.yaml        # base: fe_base.yaml ＋ 差分
-└── features/                     # 特徴量ブロック（use: <ファイル名> で呼ぶ）
-    ├── categorical_ordinal.yaml
-    ├── categorical_target.yaml
-    └── date_parts.yaml
+│   ├── common/
+│   │   ├── hx_dummy.yaml          # データ・特徴量・CV・指標の共通設定（name なし）
+│   │   └── lgbm.yaml              # LightGBM の設定
+│   ├── hx_lgbm.yaml               # base: [common/hx_dummy.yaml, common/lgbm.yaml]
+│   ├── fe_hx_base.yaml            # 探索の土台（base: hx_lgbm.yaml ＋ SHAP・誤差評価なし）
+│   ├── fe_hx_pressure_lags.yaml   # base: fe_hx_base.yaml ＋ 差分
+│   └── fe_hx_no_flags.yaml        # base: fe_hx_base.yaml ＋ 差分
+└── features/                      # 特徴量ブロック（use: <ファイル名> で呼ぶ）
+    ├── hx_chemical_ordinal.yaml
+    └── hx_pressure_drop_lags.yaml
 ```
+
+`common/` のようなサブディレクトリの設定は、`configs/experiments/*.yaml` の glob に含まれません。
+`name` の無い部品は、サブディレクトリに置いてください。
 
 ## 探索の流れ
 
 ### 1. 共通設定（ベースライン）を用意する
 
-`configs/experiments/fe_base.yaml` に、全パターンで共通のデータ・CV・モデル・指標と、ベースラインの特徴量を書きます。
-同梱の `fe_base.yaml` では、探索を速く回すため次のようにしています。
-
-- SHAP・誤差評価を無効にしている（`explain` / `evaluation` の `enabled: false`）。
-- MLflow の実験名を `feature_search` にまとめている。
+`configs/experiments/common/hx_dummy.yaml` に、全パターンで共通のデータ・特徴量・CV・指標を書きます。
 
 ```yaml
-name: fe_base
 task: regression
 data:
-  train_path: data/processed/train_with_departure_time.csv
-  target: 合計
-  group_col: 年月日
-  drop_cols: [年月日, 発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]
+  train_path: data/processed/dummy/train_dataset.parquet
+  test_path: data/processed/dummy/test_dataset.parquet
+  target: 汚れ係数
+  time_col: 日付
+  drop_cols: [日付, 機器]
 features:
-  - use: categorical_ordinal
-cv: {method: group, n_splits: 5, seed: 42}
-model:
-  name: lightgbm
-  params: {n_estimators: 2000, learning_rate: 0.05}
-  early_stopping_rounds: 100
+  - use: hx_chemical_ordinal
+cv:
+  method: time_cutoff
+  cutoffs: ["2022-01-01", "2023-01-01", "2024-01-01"]
+  valid_end: "2025-01-01"
 metrics: [rmse, mae]
-explain: {enabled: false}
-evaluation: {enabled: false}
-tracking: {experiment_name: feature_search}
+```
+
+探索の土台 `fe_hx_base.yaml` は、モデルの例 `hx_lgbm.yaml` を継承し、探索を速く回すための設定だけを足します。
+
+```yaml
+base: hx_lgbm.yaml
+name: fe_hx_base
+explain: {enabled: false}       # SHAP を作らない
+evaluation: {enabled: false}    # 誤差評価を作らない
+tracking: {experiment_name: feature_exploration_hx}   # MLflow の実験名をまとめる
 ```
 
 ### 2. 試したい特徴量をブロックにする
@@ -77,23 +85,24 @@ tracking: {experiment_name: feature_search}
 `configs/features/<名前>.yaml` に、`steps`（`features` と同じ書式のリスト）を書きます。
 
 ```yaml
-# configs/features/categorical_target.yaml
-description: 列車番号の低頻度をまとめてからターゲットエンコーディング
+# configs/features/hx_pressure_drop_lags.yaml
+description: 圧力損失のラグ（1・7・14行前）と30行の移動平均（機器ごと）
 steps:
-  - class: feature_engineering.categorical.RareLabelGrouper
-    params: {variables: [列車番号], min_frequency: 20}
-  - class: feature_engineering.categorical.PolarsTargetEncoder
-    params: {variables: [列車番号, 停車駅名]}
+  - class: feature_engineering.time_series.LagFeatureGenerator
+    params: {variables: [圧力損失], lags: [1, 7, 14], group_by: 機器番号}
+  - class: feature_engineering.time_series.MovingAverageTransformer
+    params: {variables: [圧力損失], window: 30, min_periods: 10, group_by: 機器番号}
 ```
 
 ### 3. パターンごとの YAML を差分だけで書く
 
 ```yaml
-# configs/experiments/fe_target_encoding.yaml
-base: fe_base.yaml
-name: fe_target_encoding
+# configs/experiments/fe_hx_pressure_lags.yaml
+base: fe_hx_base.yaml
+name: fe_hx_pressure_lags
 features:
-  - use: categorical_target
+  - use: hx_chemical_ordinal     # 土台の分（リストは置き換えなので書き直す）
+  - use: hx_pressure_drop_lags   # 追加分
 ```
 
 `name` は必ずパターンごとに変えてください。出力ディレクトリ名と MLflow の run 名になります。
@@ -103,13 +112,13 @@ features:
 継承と展開の結果が意図どおりかは、次のコマンドで確認できます。
 
 ```bash
-uv run python -c "import sys, yaml; sys.path.insert(0, 'src'); from pathlib import Path; from modeling.config import load_config_dict; print(yaml.safe_dump(load_config_dict(Path('configs/experiments/fe_target_encoding.yaml')), allow_unicode=True, sort_keys=False))"
+uv run python -c "import sys, yaml; sys.path.insert(0, 'src'); from pathlib import Path; from modeling.config import load_config_dict; print(yaml.safe_dump(load_config_dict(Path('configs/experiments/fe_hx_pressure_lags.yaml')), allow_unicode=True, sort_keys=False))"
 ```
 
 ### 5. まとめて実行する
 
 ```bash
-uv run python scripts/run_experiment.py --config "configs/experiments/fe_*.yaml"
+uv run python scripts/run_experiment.py --config "configs/experiments/fe_hx_*.yaml"
 ```
 
 - 実行前に、すべての設定を展開・検証します。ブロック名の誤りなどは、学習を始める前にエラーになります。
@@ -122,7 +131,7 @@ uv run python scripts/run_experiment.py --config "configs/experiments/fe_*.yaml"
 uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
 ```
 
-MLflow の実験 `feature_search` で、各 run の指標を並べます。
+MLflow の実験 `feature_exploration_hx` で、各 run の指標を並べます。
 
 | 指標 | 内容 |
 |---|---|
@@ -140,9 +149,9 @@ MLflow の実験 `feature_search` で、各 run の指標を並べます。
 有望なパターンだけ、SHAP と誤差評価を有効にして実行し直します。
 
 ```yaml
-# configs/experiments/fe_target_encoding_detail.yaml
-base: fe_target_encoding.yaml
-name: fe_target_encoding_detail
+# configs/experiments/fe_hx_pressure_lags_detail.yaml
+base: fe_hx_pressure_lags.yaml
+name: fe_hx_pressure_lags_detail
 explain: {enabled: true}
 evaluation: {enabled: true}
 ```
@@ -151,51 +160,41 @@ evaluation: {enabled: true}
 
 ### 特徴量を足す（ベースラインに追加）
 
-リストは**置き換え**です。土台の `features` に足すときは、土台のブロックも書き直します。
+リストは**置き換え**です。土台の `features` に足すときは、土台のブロックも書き直します（`fe_hx_pressure_lags.yaml`）。
 
 ```yaml
-base: fe_base.yaml
-name: fe_date_parts
+base: fe_hx_base.yaml
+name: fe_hx_pressure_lags
 features:
-  - use: categorical_ordinal   # fe_base の分
-  - use: date_parts            # 追加分
-```
-
-### 特徴量を差し替える
-
-```yaml
-base: fe_base.yaml
-name: fe_target_encoding
-features:
-  - use: categorical_target    # categorical_ordinal の代わり
+  - use: hx_chemical_ordinal     # 土台の分
+  - use: hx_pressure_drop_lags   # 追加分
 ```
 
 ### 特徴量を使わない列を変える
 
 `data` は dict なので、キー単位で上書きされます。`drop_cols` だけを書けば、`train_path` などは土台のままです。
-`drop_cols` 自体はリストなので、残したい要素を全部書きます。
+`drop_cols` 自体はリストなので、残したい要素を全部書きます（`fe_hx_no_flags.yaml`）。
 
 ```yaml
-base: fe_base.yaml
-name: fe_date_parts
+base: fe_hx_base.yaml
+name: fe_hx_no_flags
 data:
-  drop_cols: [発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]   # 年月日 を外した
-features:
-  - use: categorical_ordinal
-  - use: date_parts            # 年月日 から月・日・曜日を作り、年月日 自体は削除する
+  drop_cols: [日付, 機器, 入口圧力_外れ値, 出口圧力_外れ値, ...]   # 土台の 日付・機器 も書く
 ```
+
+使う列を明示したい場合は、`data.feature_cols` に列を並べます（`drop_cols` より優先されます）。
 
 ### ブロックを使わずに1ステップだけ試す
 
 通常のステップと `use` は混ぜて書けます。
 
 ```yaml
-base: fe_base.yaml
-name: fe_log_kilo
+base: fe_hx_base.yaml
+name: fe_hx_log_flow
 features:
-  - use: categorical_ordinal
+  - use: hx_chemical_ordinal
   - class: feature_engineering.numeric.LogTransformer
-    params: {variables: [キロ程], offset: 1}
+    params: {variables: [高温側流量, 低温側流量], offset: 1}
 ```
 
 ### ハイパーパラメータを1つだけ変える
@@ -203,35 +202,24 @@ features:
 `model.params` も dict なので、書いたキーだけが変わります。
 
 ```yaml
-base: fe_target_encoding.yaml
-name: fe_target_encoding_lr01
+base: fe_hx_pressure_lags.yaml
+name: fe_hx_pressure_lags_lr002
 model:
-  params: {learning_rate: 0.1}   # n_estimators は土台の 2000 のまま
+  params: {learning_rate: 0.02}   # n_estimators などは土台のまま
 ```
 
 ### モデルを替える（共通設定とモデル設定を分ける）
 
 `model.name` だけを書き換えると、土台の `model.params`（LightGBM の `num_leaves` など）が**残ってしまいます**（[制約](#制約と注意点)）。
-モデルを比べるときは、モデルの設定を別のファイルにして、`base` を複数並べます。
+モデルを比べるときは、`hx_lgbm.yaml` のようにモデルの設定を別のファイルにして、`base` を複数並べます。
 
 ```yaml
-# configs/experiments/common/data_cv.yaml（データ・CV・指標だけ）
-task: regression
-data: {...}
-cv: {method: group, n_splits: 5, seed: 42}
-metrics: [rmse, mae]
+# configs/experiments/common/xgb.yaml（例）
+model: {name: xgboost, params: {n_estimators: 3000, learning_rate: 0.05}, early_stopping_rounds: 100}
 
-# configs/experiments/common/lgbm.yaml
-model: {name: lightgbm, params: {n_estimators: 2000, learning_rate: 0.05}, early_stopping_rounds: 100}
-
-# configs/experiments/common/xgb.yaml
-model: {name: xgboost, params: {n_estimators: 2000, learning_rate: 0.05}, early_stopping_rounds: 100}
-
-# configs/experiments/fe_target_encoding_xgb.yaml
-base: [common/data_cv.yaml, common/xgb.yaml]
-name: fe_target_encoding_xgb
-features:
-  - use: categorical_target
+# configs/experiments/hx_xgb.yaml（例）
+base: [common/hx_dummy.yaml, common/xgb.yaml]
+name: hx_xgb
 ```
 
 ### 再帰予測の設定を外す
@@ -247,11 +235,11 @@ forecast: null
 ### ブロックの中でブロックを使う
 
 ```yaml
-# configs/features/categorical_all.yaml
-description: カテゴリの基本エンコーディング＋日付の成分
+# configs/features/hx_all_steps.yaml（例）
+description: 薬剤種類のエンコーディング＋圧力損失のラグ
 steps:
-  - use: categorical_ordinal
-  - use: date_parts
+  - use: hx_chemical_ordinal
+  - use: hx_pressure_drop_lags
 ```
 
 ### 実験と同じ場所に置いたブロックを使う

@@ -1,0 +1,6 @@
+# 熱交換器ダミーデータの定数予測（学習データの平均）。モデルの改善量を測る基準。
+base: common/hx_dummy.yaml
+name: hx_dummy_baseline
+model: {name: dummy}
+explain: {enabled: false}
+evaluation: {enabled: false}

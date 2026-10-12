@@ -267,24 +267,43 @@ def test_ensemble_config_supports_base(tmp_path: Path) -> None:
     assert (cfg.name, cfg.method, len(cfg.members)) == ("blend", "weighted", 2)
 
 
-def test_bundled_feature_search_configs_are_valid() -> None:
-    paths = sorted((REPO_ROOT / "configs" / "experiments").glob("fe_*.yaml"))
+def test_bundled_experiment_configs_are_valid() -> None:
+    """同梱の熱交換器の実験設定（hx_*・fe_hx_*）が検証を通り、同じ条件で比べられる。"""
+    paths = sorted((REPO_ROOT / "configs" / "experiments").glob("*.yaml"))
     configs = {p.stem: load_experiment_config(p) for p in paths}
-    assert {"fe_base", "fe_target_encoding", "fe_date_parts"} <= set(configs)
-    assert _step_names(configs["fe_base"]) == ["PolarsOrdinalEncoder"]
-    assert _step_names(configs["fe_target_encoding"]) == ["RareLabelGrouper", "PolarsTargetEncoder"]
-    assert _step_names(configs["fe_date_parts"]) == [
+    assert {
+        "hx_lgbm",
+        "hx_dummy_baseline",
+        "fe_hx_base",
+        "fe_hx_pressure_lags",
+        "fe_hx_no_flags",
+    } <= set(configs)
+    # 名前はファイル名と同じ（出力ディレクトリ・アンサンブルの参照に使う）
+    assert all(cfg.name == stem for stem, cfg in configs.items())
+    assert _step_names(configs["hx_lgbm"]) == ["PolarsOrdinalEncoder"]
+    assert _step_names(configs["fe_hx_pressure_lags"]) == [
         "PolarsOrdinalEncoder",
-        "DatetimeFeaturesExtractor",
-        "DropColumns",
+        "LagFeatureGenerator",
+        "MovingAverageTransformer",
     ]
-    # 比較の前提: 全パターンでデータ・CV・モデルが同じ（data は drop_cols だけ違ってよい）
-    base = configs["fe_base"]
+    assert configs["hx_dummy_baseline"].model.name == "dummy"
+    # 比較の前提: 全設定でデータ・CV・指標が同じ（共通設定 common/hx_dummy.yaml を継承）
+    base = configs["hx_lgbm"]
     for cfg in configs.values():
-        assert cfg.cv == base.cv and cfg.model == base.model and cfg.metrics == base.metrics
+        assert cfg.cv == base.cv and cfg.metrics == base.metrics
         assert cfg.data.train_path == base.data.train_path
-        assert cfg.tracking.experiment_name == "feature_search"
-    assert "年月日" not in configs["fe_date_parts"].data.drop_cols
+        assert cfg.data.target == "汚れ係数" and cfg.data.time_col == "日付"
+    # fe_hx_* は土台と同じモデルで、特徴量だけが違う
+    for stem in ("fe_hx_pressure_lags", "fe_hx_no_flags"):
+        assert configs[stem].model == configs["fe_hx_base"].model
+        assert configs[stem].tracking.experiment_name == "feature_exploration_hx"
+    assert "原油比率_補間" in configs["fe_hx_no_flags"].data.drop_cols
+
+
+def test_bundled_ensemble_config_refers_to_bundled_experiments() -> None:
+    cfg = load_ensemble_config(REPO_ROOT / "configs" / "ensembles" / "hx_blend.yaml")
+    experiments = {p.stem for p in (REPO_ROOT / "configs" / "experiments").glob("*.yaml")}
+    assert {m.experiment for m in cfg.members} <= experiments
 
 
 # --- tasks --------------------------------------------------------------------

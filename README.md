@@ -1,5 +1,29 @@
 # ac2026
-EDA &amp; Baseline
+
+熱交換器10基の日次運転データ（ダミーデータ）から、各機器の汚れ係数を予測するモデルを作るプロジェクトです。
+目的・前提は [プロジェクト概要](docs/agent/project-overview.md)、データの仕様は [データカタログ](docs/agent/data-catalog.md) を参照してください。
+
+## 実行の流れ
+
+```bash
+uv sync
+
+# 0. ダミーデータの生成（data/synthetic/）。EDA・前処理は data/raw/dummy/ を読むため、
+#    data/raw/dummy/ が無い場合は 1・2 に --raw-dir data/synthetic を付ける
+uv run python scripts/generate_synthetic_heat_exchanger.py
+# 1. EDA（outputs/figures・outputs/tables）
+uv run python scripts/eda_heat_exchanger_dummy.py
+# 2. 前処理（data/processed/dummy/{train,test}_dataset.parquet）
+uv run python scripts/preprocess_heat_exchanger_dummy.py
+# 3. 特徴量の探索（グループの組み合わせ・アブレーションを LightGBM で比べる）
+uv run python scripts/run_feature_search.py --config configs/feature_search/hx_dummy.yaml
+# 4. 学習（CV・予測・SHAP・誤差評価・MLflow記録）
+uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml
+# 5. 各モデルの探索 → 学習 → アンサンブルの一括実行
+uv run python scripts/run_pipeline.py --config configs/pipelines/hx_ensemble.yaml
+```
+
+1〜3 は、同じ内容をセルごとに実行できるノートブック（`notebook/001`〜`003`）もあります。
 
 ## ドキュメント
 

@@ -4,10 +4,10 @@
 `outputs/experiments/{実験名}/{実行日時}/` に保存され、MLflow（`mlruns/`）にも記録される。
 
 Usage:
-    uv run python scripts/run_experiment.py --config configs/experiments/example_lgbm.yaml
-    uv run python scripts/run_experiment.py --config "configs/experiments/*.yaml"
-    uv run python scripts/run_experiment.py --config configs/experiments/*.yaml --no-tracking
-    uv run python scripts/run_experiment.py --config configs/exp.yaml --tune --n-trials 30
+    uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml
+    uv run python scripts/run_experiment.py --config "configs/experiments/fe_hx_*.yaml"
+    uv run python scripts/run_experiment.py --config configs/experiments/hx_lgbm.yaml --no-tracking
+    uv run python scripts/run_experiment.py --config <実験設定> --tune --n-trials 30
 
 `--tune` を付けるとOptunaでハイパーパラメータを探索し、最良パラメータでCV学習し直す。
 studyは `outputs/optuna/{実験名}.db` に保存され、同じコマンドを再実行すると続きから探索する
@@ -30,9 +30,9 @@ import matplotlib
 # SHAP等の図をファイル保存のみ行うため非対話型バックエンドに固定する
 matplotlib.use("Agg")
 
-from modeling.config import ExperimentConfig, load_experiment_config
+from modeling.config import load_experiment_config
 from modeling.experiment import run_experiment
-from modeling.tracking import MLflowTracker, NullTracker, Tracker
+from modeling.tracking import make_tracker
 
 
 def expand_config_paths(patterns: list[str]) -> list[Path]:
@@ -51,16 +51,6 @@ def expand_config_paths(patterns: list[str]) -> list[Path]:
             if path not in paths:
                 paths.append(path)
     return paths
-
-
-def make_tracker(config: ExperimentConfig, enabled: bool) -> Tracker:
-    """設定とCLI引数から実験ログの記録先を作る。"""
-    if not (enabled and config.tracking.enabled):
-        return NullTracker()
-    return MLflowTracker(
-        experiment_name=config.tracking.experiment_name or config.name,
-        tracking_uri=config.tracking.tracking_uri,
-    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -103,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"=== {config.name} ({path}) ===")
         result = run_experiment(
             config,
-            tracker=make_tracker(config, enabled=not args.no_tracking),
+            tracker=make_tracker(config.tracking, config.name, enabled=not args.no_tracking),
             output_root=args.output_root,
             tune_params=True if args.tune else None,
             n_trials=args.n_trials,

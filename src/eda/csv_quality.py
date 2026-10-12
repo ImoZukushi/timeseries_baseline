@@ -592,7 +592,7 @@ def make_dataset_name(path: Path, raw_dir: Path) -> str:
         raw_dir: `data/raw` のパス。
 
     Returns:
-        例: `data/raw/wind_0/下条川.csv` -> `wind_0_下条川`。
+        例: `data/raw/dummy/train.csv` -> `dummy_train`。
     """
     rel = path.relative_to(raw_dir).with_suffix("")
     return "_".join(rel.parts)

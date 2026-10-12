@@ -146,8 +146,8 @@ def test_pipeline_config_rejects_duplicate_methods(tmp_path: Path) -> None:
         load_pipeline_config(path)
 
 
-def test_bundled_example_pipeline_is_valid() -> None:
-    config = load_pipeline_config(REPO_ROOT / "configs" / "pipelines" / "example_ensemble.yaml")
+def test_bundled_hx_pipeline_is_valid() -> None:
+    config = load_pipeline_config(REPO_ROOT / "configs" / "pipelines" / "hx_ensemble.yaml")
     members = load_members(config)
     validate_members(config, members)
     assert [m.config.model.name for m in members] == ["lightgbm", "xgboost", "linear"]

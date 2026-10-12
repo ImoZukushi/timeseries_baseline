@@ -1,0 +1,2 @@
+base: [common.yaml, ../../search_spaces/xgboost.yaml]
+name: hx_ensemble_xgb
