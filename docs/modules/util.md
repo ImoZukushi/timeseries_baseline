@@ -80,7 +80,8 @@ monthly_mean = (
 
 | 関数 | 内容 |
 |---|---|
-| `ensure_japanese_font()` | 日本語フォント（Windows標準の Meiryo）とマイナス記号の表示を設定する。`sns.set_theme()` はフォントを初期化するので、テーマ設定の**後に**呼ぶ |
+| `ensure_japanese_font(preferred="Meiryo")` | 使える日本語フォントを確認して設定し、マイナス記号の表示も整える。`preferred` が使えなければ使える日本語フォントに切り替えて警告を出す（設定したフォント名を返す）。`sns.set_theme()` はフォントを初期化するので、テーマ設定の**後に**呼ぶ |
+| `find_japanese_font(preferred="Meiryo")` | 使える日本語フォントの名前を返す（無ければ None）。結果はキャッシュする |
 | `add_caption(fig, text)` | 図の下部に注記（データ期間・件数など）を入れる |
 
 ```python
@@ -99,5 +100,13 @@ plt.close(fig)
 ```
 
 `eda`・`evaluation`・`modeling` の描画関数は内部で `ensure_japanese_font()` を呼ぶので、呼び出し側での設定は不要です。
-japanize-matplotlib は Python 3.12 で import できない（distutils 依存）ため使っていません。Meiryo の無い環境（macOS・Linux）では、
-`plt.rcParams["font.family"]` に手元の日本語フォント（Hiragino Sans・Noto Sans CJK JP など）を指定してください。
+japanize-matplotlib は Python 3.12 で import できない（distutils 依存）ため使っていません。
+
+フォントの選び方（`find_japanese_font`）:
+
+1. `preferred`（既定は Windows 標準の Meiryo）
+2. `FALLBACK_JAPANESE_FONTS` の順（Yu Gothic・BIZ UDGothic・MS Gothic・Hiragino Sans・Noto Sans CJK JP・IPAexGothic など。macOS・Linux の代表的なフォントを含む）
+3. それ以外のインストール済みフォント
+
+いずれも、matplotlib が認識していて、ひらがな・カタカナ・漢字の字形を持つフォントだけを使います。
+既定のフォントから切り替えたときと、日本語フォントが1つも無いとき（日本語は □ になる）は、1回だけ警告を出します。

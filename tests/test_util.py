@@ -60,11 +60,60 @@ def test_sanitize_filename_component_leaves_safe_text_unchanged() -> None:
 # --- plotting --------------------------------------------------------------
 
 
-def test_ensure_japanese_font_sets_meiryo() -> None:
+@pytest.fixture
+def fake_fonts(monkeypatch: pytest.MonkeyPatch) -> dict[str, bool]:
+    """インストール済みフォントを差し替える（フォント名 → 日本語の字形を持つか）。"""
+    fonts: dict[str, bool] = {}
+    monkeypatch.setattr(plotting, "_installed_fonts", lambda: {name: name for name in fonts})
+    monkeypatch.setattr(plotting, "_supports_japanese", lambda path: fonts[path])
+    # 探索結果・警告のキャッシュを、テストの前後で空にする
+    plotting.find_japanese_font.cache_clear()
+    plotting._warn_once.cache_clear()
+    yield fonts
+    plotting.find_japanese_font.cache_clear()
+    plotting._warn_once.cache_clear()
+
+
+def test_ensure_japanese_font_uses_default_when_available(fake_fonts: dict[str, bool]) -> None:
+    fake_fonts |= {"DejaVu Sans": False, "Meiryo": True, "Yu Gothic": True}
     plt.rcParams["font.family"] = "DejaVu Sans"
-    plotting.ensure_japanese_font()
+    assert plotting.ensure_japanese_font() == "Meiryo"
     assert plt.rcParams["font.family"] == ["Meiryo"]
     assert plt.rcParams["axes.unicode_minus"] is False
+
+
+def test_ensure_japanese_font_falls_back_with_warning(fake_fonts: dict[str, bool]) -> None:
+    # 既定の Meiryo が無い環境では、候補の順（Yu Gothic が MS Gothic より先）に切り替える
+    fake_fonts |= {"DejaVu Sans": False, "MS Gothic": True, "Yu Gothic": True}
+    with pytest.warns(UserWarning, match="Meiryo が使えないため、Yu Gothic"):
+        assert plotting.ensure_japanese_font() == "Yu Gothic"
+    assert plt.rcParams["font.family"] == ["Yu Gothic"]
+
+
+def test_ensure_japanese_font_skips_fonts_without_japanese_glyphs(
+    fake_fonts: dict[str, bool],
+) -> None:
+    # 名前があっても日本語の字形が無いフォントは使わず、候補外のフォントも探す
+    fake_fonts |= {"Meiryo": False, "Some JP Font": True}
+    with pytest.warns(UserWarning, match="Some JP Font"):
+        assert plotting.ensure_japanese_font() == "Some JP Font"
+
+
+def test_ensure_japanese_font_keeps_font_when_none_available(fake_fonts: dict[str, bool]) -> None:
+    fake_fonts |= {"DejaVu Sans": False}
+    plt.rcParams["font.family"] = "DejaVu Sans"
+    with pytest.warns(UserWarning, match="見つかりません"):
+        assert plotting.ensure_japanese_font() is None
+    assert plt.rcParams["font.family"] == ["DejaVu Sans"]
+
+
+def test_find_japanese_font_on_this_machine() -> None:
+    # 実際の環境でも、見つかったフォントは日本語の字形を持つ
+    plotting.find_japanese_font.cache_clear()
+    font = plotting.find_japanese_font()
+    if font is not None:
+        path = plotting._installed_fonts()[font]
+        assert plotting._supports_japanese(path)
 
 
 def test_add_caption_adds_text_to_figure() -> None:
