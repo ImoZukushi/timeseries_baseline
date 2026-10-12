@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns

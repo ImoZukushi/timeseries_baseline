@@ -30,6 +30,8 @@ import matplotlib
 # SHAP等の図をファイル保存のみ行うため非対話型バックエンドに固定する
 matplotlib.use("Agg")
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
+
 from modeling.config import load_experiment_config
 from modeling.experiment import run_experiment
 from modeling.tracking import make_tracker

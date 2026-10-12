@@ -59,6 +59,7 @@ from pathlib import Path
 # scripts/ から直接実行しても src/ 配下のパッケージをimportできるようにする
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import matplotlib.pyplot as plt
 import polars as pl
 from eda_heat_exchanger_dummy import (

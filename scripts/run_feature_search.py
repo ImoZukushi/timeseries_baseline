@@ -26,6 +26,7 @@ import matplotlib
 # 図はファイル保存のみ行うため非対話型バックエンドに固定する
 matplotlib.use("Agg")
 
+import japanize_matplotlib  # noqa: E402, F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import polars as pl  # noqa: E402
 
 from modeling.config import ExperimentConfig, load_feature_search_config  # noqa: E402

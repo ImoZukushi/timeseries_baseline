@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from functools import lru_cache
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.ft2font import FT2Font
@@ -79,9 +80,11 @@ def ensure_japanese_font(preferred: str = DEFAULT_JAPANESE_FONT) -> str | None:
     `preferred`（既定は Meiryo）が使えなければ、使える日本語フォントに切り替えて警告を出す。
     日本語フォントが1つも無ければ、フォントは変えずに警告を出す（日本語は □ で表示される）。
 
-    japanize-matplotlib は distutils 依存のためPython 3.12（setuptools未導入環境）では
-    importできないので使用しない。`sns.set_theme()` はフォント設定を含むrcParamsを上書きするため、
-    各描画関数の先頭で都度呼び出して確実に日本語フォントが有効な状態で描画する。
+    このモジュールは japanize-matplotlib を import しており、同梱の IPAexGothic が常に
+    matplotlib に登録される（OS に日本語フォントが無くても、IPAexGothic に切り替えられる）。
+    japanize-matplotlib は distutils を使うため、Python 3.12 では setuptools を依存に含めている。
+    `sns.set_theme()` はフォント設定を含むrcParamsを上書きするため、各描画関数の先頭で
+    都度呼び出して確実に日本語フォントが有効な状態で描画する。
 
     Args:
         preferred: 優先して使うフォント名。

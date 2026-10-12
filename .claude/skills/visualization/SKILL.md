@@ -36,17 +36,16 @@ sns.set_theme(
 
 If any text (titles, labels, legends, annotations) contains Japanese, configure a CJK-capable font, **otherwise characters render as tofu (□□□)**.
 
-Preferred approach (cross-platform):
+**Required in this project:** every file that uses matplotlib (modules, scripts, tests, notebooks) imports japanize-matplotlib
+(already a dependency, together with `setuptools` for its `distutils` import). It registers the bundled IPAexGothic font.
 
 ```python
-import japanize_matplotlib  # uv add japanize-matplotlib
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 ```
 
-Alternative (set an installed CJK font explicitly):
-
-```python
-plt.rcParams["font.family"] = "Noto Sans CJK JP"  # or "IPAexGothic", "Hiragino Sans", "Yu Gothic"
-```
+Then call `util.plotting.ensure_japanese_font()` before drawing (after `sns.set_theme()`, which resets fonts).
+It checks that the preferred font (Meiryo) is installed and can render Japanese, and otherwise switches
+to a usable Japanese font (IPAexGothic is always available) with a one-time warning.
 
 ## Figure Creation
 

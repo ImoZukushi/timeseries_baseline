@@ -49,6 +49,7 @@ import matplotlib
 # 図はファイル保存のみ行うため非対話型バックエンドに固定する
 matplotlib.use("Agg")
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl

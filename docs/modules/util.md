@@ -85,6 +85,7 @@ monthly_mean = (
 | `add_caption(fig, text)` | 図の下部に注記（データ期間・件数など）を入れる |
 
 ```python
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -100,7 +101,10 @@ plt.close(fig)
 ```
 
 `eda`・`evaluation`・`modeling` の描画関数は内部で `ensure_japanese_font()` を呼ぶので、呼び出し側での設定は不要です。
-japanize-matplotlib は Python 3.12 で import できない（distutils 依存）ため使っていません。
+matplotlib を使うモジュール・スクリプト・ノートブックでは、必ず `import japanize_matplotlib  # noqa: F401` を書きます。
+import すると、japanize-matplotlib に同梱の日本語フォント IPAexGothic が matplotlib に登録され、
+OS に日本語フォントが無い環境でも日本語を描画できます（`util.plotting` も import しているので、下の候補の最後の頼みになります）。
+japanize-matplotlib は `distutils` を使うため、Python 3.12 では `setuptools` を依存に含めています（`pyproject.toml`）。
 
 フォントの選び方（`find_japanese_font`）:
 

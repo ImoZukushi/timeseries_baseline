@@ -36,6 +36,7 @@ import matplotlib
 # matplotlib.pyplot を最初にimportする前に設定する必要がある。
 matplotlib.use("Agg")
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import polars as pl
 import seaborn as sns
 

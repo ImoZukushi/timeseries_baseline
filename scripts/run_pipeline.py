@@ -28,6 +28,7 @@ import matplotlib
 # SHAP等の図をファイル保存のみ行うため非対話型バックエンドに固定する
 matplotlib.use("Agg")
 
+import japanize_matplotlib  # noqa: E402, F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import polars as pl  # noqa: E402
 
 from modeling.config import ExperimentConfig, load_pipeline_config  # noqa: E402

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import matplotlib.pyplot as plt
 import polars as pl
 import pytest
@@ -105,6 +106,16 @@ def test_ensure_japanese_font_keeps_font_when_none_available(fake_fonts: dict[st
     with pytest.warns(UserWarning, match="見つかりません"):
         assert plotting.ensure_japanese_font() is None
     assert plt.rcParams["font.family"] == ["DejaVu Sans"]
+
+
+def test_japanize_matplotlib_registers_ipaexgothic() -> None:
+    # japanize-matplotlib を import すると、同梱の IPAexGothic が常に使える（日本語フォントの最後の頼み）
+    installed = plotting._installed_fonts()
+    assert "IPAexGothic" in installed
+    assert plotting._supports_japanese(installed["IPAexGothic"])
+    plotting.find_japanese_font.cache_clear()
+    assert plotting.find_japanese_font("No Such Font") is not None
+    plotting.find_japanese_font.cache_clear()
 
 
 def test_find_japanese_font_on_this_machine() -> None:

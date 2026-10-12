@@ -40,6 +40,7 @@ uv run mypy src
 
 - DataFrame operations: prefer **polars** over pandas.
 - Visualization: use `fig, ax = plt.subplots(...)`, not `plt.figure(...)`.
+- Visualization: any module, script, test, or notebook that uses matplotlib must `import japanize_matplotlib  # noqa: F401`, and call `util.plotting.ensure_japanese_font()` before drawing.
 - File paths: use `pathlib.Path`, no absolute local paths.
 - Docstrings: Google-style.
 - Inline comments: Japanese.

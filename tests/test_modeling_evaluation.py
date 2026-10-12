@@ -6,6 +6,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
+import japanize_matplotlib  # noqa: F401  # 日本語フォント（IPAexGothic）を matplotlib に登録する
 import numpy as np
 import polars as pl
 import pytest
