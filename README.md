@@ -8,9 +8,10 @@
 ```bash
 uv sync
 
-# 0. ダミーデータの生成（data/synthetic/）。EDA・前処理は data/raw/dummy/ を読むため、
-#    data/raw/dummy/ が無い場合は 1・2 に --raw-dir data/synthetic を付ける
+# 0. ダミーデータ（A部門の構成、9ファイル）の生成（data/synthetic/）
 uv run python scripts/generate_synthetic_heat_exchanger.py
+# 以下の 1〜5 は、現時点では旧形式のダミーデータ（data/raw/dummy/）を前提にしている
+#    （A部門の構成への対応は今後行う）
 # 1. EDA（outputs/figures・outputs/tables）
 uv run python scripts/eda_heat_exchanger_dummy.py
 # 2. 前処理（data/processed/dummy/{train,test}_dataset.parquet）

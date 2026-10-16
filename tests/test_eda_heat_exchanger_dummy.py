@@ -1,6 +1,7 @@
 """scripts/eda_heat_exchanger_dummy.py（熱交換器ダミーデータの EDA）のテスト。
 
-データは generate_synthetic_heat_exchanger で小さく作り、一時ディレクトリに置いて使う。
+データは legacy_heat_exchanger_data（旧形式のダミーデータ生成）で小さく作り、
+一時ディレクトリに置いて使う。
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ import datetime as dt
 from pathlib import Path
 
 import eda_heat_exchanger_dummy as eda
-import generate_synthetic_heat_exchanger as gen
+import legacy_heat_exchanger_data as gen
 import polars as pl
 import pytest
 

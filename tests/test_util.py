@@ -109,7 +109,7 @@ def test_ensure_japanese_font_keeps_font_when_none_available(fake_fonts: dict[st
 
 
 def test_japanize_matplotlib_registers_ipaexgothic() -> None:
-    # japanize-matplotlib を import すると、同梱の IPAexGothic が常に使える（日本語フォントの最後の頼み）
+    # japanize-matplotlib を import すると、同梱の IPAexGothic が常に使える
     installed = plotting._installed_fonts()
     assert "IPAexGothic" in installed
     assert plotting._supports_japanese(installed["IPAexGothic"])

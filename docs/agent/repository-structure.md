@@ -19,7 +19,7 @@
 | `data/raw/` | 元データ（不変・gitignore対象） |
 | `data/external/` | 外部データ（不変・gitignore対象） |
 | `data/interim/` | 中間加工データ（gitignore対象） |
-| `data/synthetic/` | スクリプトで生成したダミーデータ（gitignore対象。`scripts/generate_synthetic_heat_exchanger.py`、[データカタログ](data-catalog.md)） |
+| `data/synthetic/` | スクリプトで生成したダミーデータ（A部門の構成の9ファイル。gitignore対象。`scripts/generate_synthetic_heat_exchanger.py`、[データカタログ](data-catalog.md)） |
 | `data/processed/` | 最終加工データ（gitignore対象） |
 | `outputs/` | グラフ・集計テーブル・レポート |
 | `outputs/experiments/`, `outputs/ensembles/` | 実験・アンサンブルの予測とスコア（gitignore対象） |
@@ -44,12 +44,13 @@
 
 ## モデリングの実行手順
 
-このプロジェクトは、熱交換器のダミーデータ（`data/raw/dummy/`、10基の日次運転データ）で汚れ係数を予測する。
+このプロジェクトは、熱交換器のダミーデータ（10基の日次運転データ）で汚れ係数を予測する。
+ダミーデータは A部門の構成（`data/synthetic/`）に作り替えたが、EDA 以降の段階は、現時点では旧形式（`data/raw/dummy/`）を前提にしている。
 各段階のスクリプトと、同じ内容をセルごとに実行できるノートブックは次のとおり。
 
 | 段階 | スクリプト | ノートブック |
 |---|---|---|
-| ダミーデータの生成（`data/synthetic/`） | `scripts/generate_synthetic_heat_exchanger.py` | ― |
+| ダミーデータ（A部門の構成）の生成（`data/synthetic/`） | `scripts/generate_synthetic_heat_exchanger.py` | ― |
 | EDA（`src/eda` の使い方の例を兼ねる） | `scripts/eda_heat_exchanger_dummy.py` | `notebook/001_eda_heat_exchanger_dummy.ipynb` |
 | 前処理（クリーニング・洗浄の推定・特徴量 → `data/processed/dummy/{train,test}_dataset.parquet`） | `scripts/preprocess_heat_exchanger_dummy.py` | `notebook/002_preprocess_heat_exchanger_dummy.ipynb` |
 | 特徴量の探索（LightGBM でグループの組み合わせ・アブレーションを比べる） | `scripts/run_feature_search.py` | `notebook/003_feature_search_heat_exchanger_dummy.ipynb` |
