@@ -36,7 +36,7 @@ import matplotlib
 # matplotlib.pyplot を最初にimportする前に設定する必要がある。
 matplotlib.use("Agg")
 
-import polars as pl
+import pandas as pd
 import seaborn as sns
 
 from eda.csv_quality import make_dataset_name, run_quality_checks
@@ -80,8 +80,8 @@ def main() -> None:
         print(f"対象ファイルが見つかりません: {scan_dir}/{args.pattern}")
         return
 
-    df_overviews: list[pl.DataFrame] = []
-    col_overviews: list[pl.DataFrame] = []
+    df_overviews: list[pd.DataFrame] = []
+    col_overviews: list[pd.DataFrame] = []
     failures: list[tuple[Path, str]] = []
     n_time_series_plots = 0
 
@@ -116,11 +116,11 @@ def main() -> None:
             failures.append((path, str(e)))
 
     if df_overviews:
-        summary_df = pl.concat(df_overviews, how="vertical_relaxed")
-        summary_df.write_csv(tables_dir / "summary_all_files__dataframe_overview.csv")
+        summary_df = pd.concat(df_overviews, ignore_index=True)
+        summary_df.to_csv(tables_dir / "summary_all_files__dataframe_overview.csv", index=False)
     if col_overviews:
-        summary_col = pl.concat(col_overviews, how="vertical_relaxed")
-        summary_col.write_csv(tables_dir / "summary_all_files__column_overview.csv")
+        summary_col = pd.concat(col_overviews, ignore_index=True)
+        summary_col.to_csv(tables_dir / "summary_all_files__column_overview.csv", index=False)
 
     print(
         f"\n完了: {len(df_overviews)}件成功, {len(failures)}件失敗, "

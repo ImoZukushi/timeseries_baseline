@@ -49,7 +49,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-import polars as pl
+import pandas as pd
 import seaborn as sns
 
 from eda.csv_quality import run_quality_checks
@@ -90,7 +90,7 @@ NLAGS = 60  # ACF/PACFで表示するラグ数（約2か月）
 # --- このデータ固有の確認 -------------------------------------------------------------
 
 
-def date_continuity_summary(df: pl.DataFrame, time_col: str = TIME_COL) -> pl.DataFrame:
+def date_continuity_summary(df: pd.DataFrame, time_col: str = TIME_COL) -> pd.DataFrame:
     """日付が1日刻みで欠けも重複もなく並んでいるかを要約する。
 
     時系列モデル（ラグ特徴量など）は「1行 = 1日」を前提にするため、欠けている日や
@@ -103,26 +103,28 @@ def date_continuity_summary(df: pl.DataFrame, time_col: str = TIME_COL) -> pl.Da
     Returns:
         1行の要約表（開始日・終了日・行数・期待される日数・欠けている日数・重複している日数）。
     """
-    dates = df[time_col].cast(pl.Date)
+    # 時刻を切り捨てて日付にする
+    dates = pd.to_datetime(df[time_col]).dt.normalize()
     start, end = dates.min(), dates.max()
     # 開始日から終了日までの「あるべき日付」の一覧
-    expected = pl.date_range(start, end, interval="1d", eager=True)
-    missing = expected.filter(~expected.is_in(dates.implode()))
-    return pl.DataFrame(
+    expected = pd.date_range(start, end, freq="D")
+    missing = expected.difference(pd.DatetimeIndex(dates))
+    return pd.DataFrame(
         {
-            "start": [start],
-            "end": [end],
-            "n_rows": [df.height],
-            "expected_days": [expected.len()],
-            "missing_days": [missing.len()],
-            "duplicated_days": [int(dates.is_duplicated().sum())],
+            "start": [start.date()],
+            "end": [end.date()],
+            "n_rows": [len(df)],
+            "expected_days": [len(expected)],
+            "missing_days": [len(missing)],
+            # 重複している日は、重複したすべての行を数える
+            "duplicated_days": [int(dates.duplicated(keep=False).sum())],
         }
     )
 
 
 def out_of_range_values(
-    df: pl.DataFrame, ranges: dict[str, tuple[float, float]], time_col: str = TIME_COL
-) -> pl.DataFrame:
+    df: pd.DataFrame, ranges: dict[str, tuple[float, float]], time_col: str = TIME_COL
+) -> pd.DataFrame:
     """物理的にありうる範囲の外にある値を、日付・変数・値の一覧で返す。
 
     Args:
@@ -135,21 +137,29 @@ def out_of_range_values(
     """
     frames = []
     for column, (lower, upper) in ranges.items():
+        # 欠損は範囲外とはみなさない
+        outside = df[column].notna() & ~df[column].between(lower, upper)
         frames.append(
-            df.filter(~pl.col(column).is_between(lower, upper)).select(
-                pl.col(time_col),
-                pl.lit(column).alias("variable"),
-                pl.col(column).cast(pl.Float64).alias("value"),
-                pl.lit(lower).alias("lower"),
-                pl.lit(upper).alias("upper"),
+            pd.DataFrame(
+                {
+                    time_col: df.loc[outside, time_col],
+                    "variable": column,
+                    "value": df.loc[outside, column].astype("float64"),
+                    "lower": lower,
+                    "upper": upper,
+                }
             )
         )
-    return pl.concat(frames).sort(time_col, "variable")
+    return (
+        pd.concat(frames, ignore_index=True)
+        .sort_values([time_col, "variable"], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def yearly_means(
-    df: pl.DataFrame, ranges: dict[str, tuple[float, float]], time_col: str = TIME_COL
-) -> pl.DataFrame:
+    df: pd.DataFrame, ranges: dict[str, tuple[float, float]], time_col: str = TIME_COL
+) -> pd.DataFrame:
     """年ごとの平均と日数を集計する（長期的な推移や、年による欠けの確認用）。
 
     範囲外の値（記録の誤りの候補）は、1件でも平均を大きく歪めるため除外して平均する
@@ -163,22 +173,19 @@ def yearly_means(
     Returns:
         列 `year`, `n_days`, 各変数の平均 の表。
     """
-    return (
-        df.group_by(pl.col(time_col).dt.year().alias("year"))
-        .agg(
-            pl.len().alias("n_days"),
-            *[
-                # 範囲外の値を欠損にしてから平均する（mean は欠損を無視する）
-                pl.col(v).filter(pl.col(v).is_between(lower, upper)).mean()
-                for v, (lower, upper) in ranges.items()
-            ],
-        )
-        .sort("year")
+    # 範囲外の値を欠損にしてから平均する（mean は欠損を無視する）
+    masked = pd.DataFrame(
+        {v: df[v].where(df[v].between(lower, upper)) for v, (lower, upper) in ranges.items()}
     )
+    masked.insert(0, "year", df[time_col].dt.year)
+    grouped = masked.groupby("year", sort=True)
+    yearly = grouped[list(ranges)].mean()
+    yearly.insert(0, "n_days", grouped.size())
+    return yearly.reset_index()
 
 
 def plot_monthly_boxplots(
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     ranges: dict[str, tuple[float, float]],
     time_col: str = TIME_COL,
 ) -> plt.Figure:
@@ -203,20 +210,18 @@ def plot_monthly_boxplots(
     excluded_notes = []
     for ax, variable in zip(axes.flat, variables, strict=True):
         lower, upper = ranges[variable]
-        in_range = df.filter(pl.col(variable).is_between(lower, upper))
-        excluded = df.height - in_range.height
+        in_range = df[df[variable].between(lower, upper)]
+        excluded = len(df) - len(in_range)
         if excluded:
             excluded_notes.append(f"{variable}: {excluded}件")
-        plot_df = in_range.select(
-            pl.col(time_col).dt.month().alias("month"), pl.col(variable)
-        ).to_pandas()  # seabornに渡すためpandasに変換する
+        plot_df = pd.DataFrame({"month": in_range[time_col].dt.month, variable: in_range[variable]})
         sns.boxplot(data=plot_df, x="month", y=variable, ax=ax, color="#8fb3d9", fliersize=2)
         ax.set_title(f"{variable}: 月別の分布")
         ax.set_xlabel("月")
         ax.set_ylabel(VARIABLE_LABELS[variable])
     fig.suptitle(
         f"デリーの気候（学習データ）: 月別の分布 "
-        f"（{df[time_col].min():%Y-%m-%d}〜{df[time_col].max():%Y-%m-%d}, n={df.height:,}日）"
+        f"（{df[time_col].min():%Y-%m-%d}〜{df[time_col].max():%Y-%m-%d}, n={len(df):,}日）"
     )
     note = "範囲外の値は描画から除外: " + ", ".join(excluded_notes) if excluded_notes else ""
     add_caption(fig, f"箱は四分位範囲、線は中央値、点は外れ値（1.5×IQRの外）。{note}")
@@ -242,8 +247,8 @@ def main(argv: list[str] | None = None) -> None:
     tables_dir = root / "tables"
 
     # 1. 読み込み（日付列は Datetime 型として読み込まれる）
-    df = read_csv_auto(TRAIN_PATH).sort(TIME_COL)
-    print(f"読み込み: {TRAIN_PATH.name} {df.height}行 × {df.width}列")
+    df = read_csv_auto(TRAIN_PATH).sort_values(TIME_COL, kind="stable").reset_index(drop=True)
+    print(f"読み込み: {TRAIN_PATH.name} {df.shape[0]}行 × {df.shape[1]}列")
     print(df.head())
 
     # 2. データ品質確認（全体概要・カラム要約・品質確認の図）
@@ -273,17 +278,19 @@ def main(argv: list[str] | None = None) -> None:
 
     # 4. このデータ固有の確認
     continuity = date_continuity_summary(df)
-    continuity.write_csv(ensure_parent_dir(tables_dir / f"{DATASET_NAME}__date_continuity.csv"))
+    continuity.to_csv(
+        ensure_parent_dir(tables_dir / f"{DATASET_NAME}__date_continuity.csv"), index=False
+    )
     print("=== 日付の連続性 ===")
     print(continuity)
 
     outliers = out_of_range_values(df, PLAUSIBLE_RANGES)
-    outliers.write_csv(tables_dir / f"{DATASET_NAME}__out_of_range_values.csv")
-    print(f"=== 物理的にありうる範囲の外の値: {outliers.height}件 ===")
+    outliers.to_csv(tables_dir / f"{DATASET_NAME}__out_of_range_values.csv", index=False)
+    print(f"=== 物理的にありうる範囲の外の値: {len(outliers)}件 ===")
     print(outliers)
 
     yearly = yearly_means(df, PLAUSIBLE_RANGES)
-    yearly.write_csv(tables_dir / f"{DATASET_NAME}__yearly_means.csv")
+    yearly.to_csv(tables_dir / f"{DATASET_NAME}__yearly_means.csv", index=False)
     # 2017年は1日（2017-01-01）しかないため、他の年と平均を比べることはできない
     print("=== 年別の平均（範囲外の値を除く） ===")
     print(yearly)

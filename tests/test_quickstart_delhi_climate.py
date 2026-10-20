@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 import quickstart_delhi_climate as qs
+from pandas_helpers import as_list, row_at
 
 pytestmark = pytest.mark.skipif(
     not (qs.TRAIN_PATH.is_file() and qs.TEST_PATH.is_file()),
@@ -16,7 +17,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_to_long_stacks_variables_as_series() -> None:
-    wide = pl.DataFrame(
+    wide = pd.DataFrame(
         {
             "date": [1, 2],
             "meantemp": [10.0, 11.0],
@@ -25,41 +26,41 @@ def test_to_long_stacks_variables_as_series() -> None:
         }
     )
     long = qs.to_long(wide)
-    assert long.columns == ["date", "variable", "value"]
-    assert long.height == 2 * 3
-    assert long.filter(pl.col("variable") == "humidity")["value"].to_list() == [80.0, 81.0]
+    assert list(long.columns) == ["date", "variable", "value"]
+    assert len(long) == 2 * 3
+    assert long.loc[long["variable"] == "humidity", "value"].pipe(as_list) == [80.0, 81.0]
 
 
 def test_load_data_shapes_and_no_leak() -> None:
     train, test, truth = qs.load_data()
-    assert train.columns == ["date", "variable", "value"]
+    assert list(train.columns) == ["date", "variable", "value"]
     # 予測対象には実測値を渡さない
-    assert test.columns == ["date", "variable"]
+    assert list(test.columns) == ["date", "variable"]
     assert set(train["variable"].unique()) == set(qs.TARGET_VARIABLES)  # wind_speed は含まない
     # 学習期間はテスト開始日より前で終わる（重なる行は除外）
     assert train["date"].max() < test["date"].min()
-    assert test.height == truth.height == qs.HORIZON * len(qs.TARGET_VARIABLES)
+    assert len(test) == len(truth) == qs.HORIZON * len(qs.TARGET_VARIABLES)
     # 予測対象と実測値は同じ行順（予測値をそのまま実測値と比較できる）
-    assert test.equals(truth.select("date", "variable"))
+    assert test.equals(truth[["date", "variable"]])
 
 
 def test_training_pressure_outliers_are_interpolated() -> None:
     train, _, _ = qs.load_data()
-    pressure = train.filter(pl.col("variable") == "meanpressure")["value"]
+    pressure = train.loc[train["variable"] == "meanpressure", "value"]
     low, high = qs.PRESSURE_VALID_RANGE
-    assert pressure.null_count() == 0
-    assert pressure.is_between(low, high).all()
+    assert pressure.isna().sum() == 0
+    assert pressure.between(low, high).all()
 
 
 def test_interpolate_invalid_pressure() -> None:
-    wide = pl.DataFrame({"meanpressure": [1000.0, 7679.0, 1010.0, -3.0]})
-    out = qs.interpolate_invalid_pressure(wide)["meanpressure"].to_list()
+    wide = pd.DataFrame({"meanpressure": [1000.0, 7679.0, 1010.0, -3.0]})
+    out = qs.interpolate_invalid_pressure(wide)["meanpressure"].pipe(as_list)
     # 途中の異常値は前後の直線補間、末尾は直前の値で埋める
     assert out == pytest.approx([1000.0, 1005.0, 1010.0, 1010.0])
 
 
 def test_evaluation_excludes_invalid_pressure() -> None:
-    truth = pl.DataFrame(
+    truth = pd.DataFrame(
         {
             "date": [1, 1, 2],
             "variable": ["meantemp", "meanpressure", "meanpressure"],
@@ -67,7 +68,7 @@ def test_evaluation_excludes_invalid_pressure() -> None:
         }
     )
     scores = qs.evaluate_on_test(truth, {"m": np.array([11.0, 1000.0, 1002.0])})
-    pressure = scores.filter(pl.col("variable") == "meanpressure").row(0, named=True)
+    pressure = row_at(scores[scores["variable"] == "meanpressure"], 0)
     # 59 hPa の行は除外され、残り1行のMAE=2になる
     assert pressure["n"] == 1
     assert pressure["test_mae"] == pytest.approx(2.0)
@@ -92,7 +93,7 @@ def test_experiment_config_is_valid() -> None:
 
 
 def test_evaluate_on_test_per_variable_and_overall() -> None:
-    truth = pl.DataFrame(
+    truth = pd.DataFrame(
         {
             "date": [1, 1, 1],
             "variable": ["meantemp", "humidity", "meanpressure"],
@@ -109,7 +110,7 @@ def test_evaluate_on_test_per_variable_and_overall() -> None:
 
 def test_quickstart_end_to_end(tmp_path: Path) -> None:
     qs.main(["--n-trials", "1", "--no-tracking", "--output-root", str(tmp_path)])
-    scores = pl.read_csv(tmp_path / "tables" / "delhi_quickstart__test_mae.csv")
+    scores = pd.read_csv(tmp_path / "tables" / "delhi_quickstart__test_mae.csv")
     assert set(scores["model"]) == {"lightgbm", "xgboost", "ensemble"}
     assert set(scores["variable"]) == {*qs.TARGET_VARIABLES, "all"}
     assert scores["test_mae"].is_finite().all()
@@ -142,11 +143,11 @@ def test_quickstart_end_to_end(tmp_path: Path) -> None:
         for kind in ("recursive", "onestep"):
             for variable in qs.TARGET_VARIABLES:
                 assert f"residual_diagnostics__{kind}__{variable}.png" in evaluation
-        tests = pl.read_csv(run_dir / "evaluation" / "residual_tests.csv")
-        assert tests.height == 2 * len(qs.TARGET_VARIABLES)
-        summary = pl.read_csv(run_dir / "evaluation" / "residual_summary.csv")
-        assert summary["series"].to_list() == ["all", *sorted(qs.TARGET_VARIABLES)]
+        tests = pd.read_csv(run_dir / "evaluation" / "residual_tests.csv")
+        assert len(tests) == 2 * len(qs.TARGET_VARIABLES)
+        summary = pd.read_csv(run_dir / "evaluation" / "residual_summary.csv")
+        assert summary["series"].pipe(as_list) == ["all", *sorted(qs.TARGET_VARIABLES)]
         # テスト予測は 114日 × 3変数
-        test_pred = pl.read_parquet(run_dir / "test_predictions.parquet")
-        assert test_pred.height == qs.HORIZON * len(qs.TARGET_VARIABLES)
+        test_pred = pd.read_parquet(run_dir / "test_predictions.parquet")
+        assert len(test_pred) == qs.HORIZON * len(qs.TARGET_VARIABLES)
     assert any((tmp_path / "ensembles" / "delhi_blend").iterdir())

@@ -89,7 +89,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 
 from modeling.config import EnsembleConfig, ExperimentConfig
 from modeling.ensemble import EnsembleResult, run_ensemble
@@ -145,7 +145,7 @@ LJUNG_BOX_LAGS = [7, 14]
 # --- データの読み込みと整形 ---------------------------------------------------------
 
 
-def to_long(frame: pl.DataFrame) -> pl.DataFrame:
+def to_long(frame: pd.DataFrame) -> pd.DataFrame:
     """横持ち（1行=1日, 列=変数）を縦持ち（1行=1日×1変数）に変換する。
 
     グローバルモデルでは、3変数を「系列IDの異なる3本の時系列」として縦に積み、
@@ -158,24 +158,25 @@ def to_long(frame: pl.DataFrame) -> pl.DataFrame:
         列 `date`, `variable`, `value` のDataFrame（日付・変数の順に並べ替え済み）。
     """
     return (
-        frame.unpivot(
-            index=TIME_COL,
-            on=list(TARGET_VARIABLES),
-            variable_name=SERIES_COL,
+        frame.melt(
+            id_vars=TIME_COL,
+            value_vars=list(TARGET_VARIABLES),
+            var_name=SERIES_COL,
             value_name=TARGET,
         )
         # 同じ日付の中では変数名順に並べる（行順を決めておくと結果が再現しやすい）
-        .sort(TIME_COL, SERIES_COL)
+        .sort_values([TIME_COL, SERIES_COL], kind="stable")
+        .reset_index(drop=True)
     )
 
 
-def pressure_is_valid() -> pl.Expr:
-    """`meanpressure` 列が物理的にありうる範囲内かを表す式（欠損はFalse）。"""
+def pressure_is_valid(frame: pd.DataFrame) -> pd.Series:
+    """`meanpressure` 列が物理的にありうる範囲内か（欠損はFalse）。"""
     low, high = PRESSURE_VALID_RANGE
-    return pl.col("meanpressure").is_between(low, high).fill_null(False)
+    return frame["meanpressure"].between(low, high)
 
 
-def interpolate_invalid_pressure(frame: pl.DataFrame) -> pl.DataFrame:
+def interpolate_invalid_pressure(frame: pd.DataFrame) -> pd.DataFrame:
     """学習データの `meanpressure` の異常値を欠損にし、前後の日の値から線形補間する。
 
     Args:
@@ -184,21 +185,20 @@ def interpolate_invalid_pressure(frame: pl.DataFrame) -> pl.DataFrame:
     Returns:
         異常値を補間した DataFrame。
     """
-    return frame.with_columns(
-        # 範囲外の値を欠損（null）に置き換える
-        pl.when(pressure_is_valid())
-        .then(pl.col("meanpressure"))
-        .otherwise(None)
-        # 前後の有効な値を直線で結んで埋める（日付順に並んでいることが前提）
-        .interpolate()
+    pressure = (
+        # 範囲外の値を欠損に置き換える
+        frame["meanpressure"]
+        .where(pressure_is_valid(frame))
+        # 前後の有効な値を直線で結んで埋める（日付順に並んでいることが前提。行は等間隔とみなす）
+        .interpolate(limit_area="inside")
         # 先頭・末尾の欠損は直線補間できないので、隣の有効な値で埋める
-        .forward_fill()
-        .backward_fill()
-        .alias("meanpressure")
+        .ffill()
+        .bfill()
     )
+    return frame.assign(meanpressure=pressure)
 
 
-def is_valid_observation(truth: pl.DataFrame) -> np.ndarray:
+def is_valid_observation(truth: pd.DataFrame) -> np.ndarray:
     """縦持ちの実測値のうち、評価に使える行かどうか（`meanpressure` の異常値はFalse）。
 
     Args:
@@ -208,15 +208,16 @@ def is_valid_observation(truth: pl.DataFrame) -> np.ndarray:
         評価に使える行ならTrueの真偽値配列。
     """
     low, high = PRESSURE_VALID_RANGE
-    is_pressure = pl.col(SERIES_COL) == "meanpressure"
-    in_range = pl.col(TARGET).is_between(low, high)
+    is_pressure = truth[SERIES_COL] == "meanpressure"
+    # 欠損は範囲内とみなさない
+    in_range = truth[TARGET].between(low, high)
     # 気圧以外の変数は常に有効、気圧は範囲内のときだけ有効
-    return truth.select((~is_pressure | in_range).fill_null(False)).to_series().to_numpy()
+    return (~is_pressure | in_range).to_numpy(dtype=bool)
 
 
 def load_data(
     train_path: Path = TRAIN_PATH, test_path: Path = TEST_PATH
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """学習データ・予測対象・テスト期間の実測値を、縦持ちの形で読み込む。
 
     Args:
@@ -230,13 +231,14 @@ def load_data(
     """
     # date と3つの目的変数だけを残す（wind_speed はここでドロップされる）
     columns = [TIME_COL, *TARGET_VARIABLES]
-    train_wide = read_csv_auto(train_path).select(columns)
-    test_wide = read_csv_auto(test_path).select(columns)
+    train_wide = read_csv_auto(train_path)[columns]
+    test_wide = read_csv_auto(test_path)[columns]
 
     # 学習データの最終日はテストデータの初日と重なっているため、
     # テスト開始日以降の学習行を除外する（再帰予測は学習期間の直後から始めるため）
     test_start = test_wide[TIME_COL].min()
-    train_wide = train_wide.filter(pl.col(TIME_COL) < test_start).sort(TIME_COL)
+    train_wide = train_wide[train_wide[TIME_COL] < test_start]
+    train_wide = train_wide.sort_values(TIME_COL, kind="stable").reset_index(drop=True)
 
     # 学習データの気圧の異常値は補間する（テストデータの異常値は評価時に除外する）
     train_wide = interpolate_invalid_pressure(train_wide)
@@ -244,7 +246,7 @@ def load_data(
     train = to_long(train_wide)
     truth = to_long(test_wide)
     # 予測対象には実測値の列を渡さない（テストの答えがモデルに漏れないようにする）
-    test = truth.select(TIME_COL, SERIES_COL)
+    test = truth[[TIME_COL, SERIES_COL]]
     return train, test, truth
 
 
@@ -375,7 +377,7 @@ def make_ensemble_config(member_dirs: dict[str, Path]) -> EnsembleConfig:
 # --- テスト期間の評価と可視化 --------------------------------------------------------
 
 
-def evaluate_on_test(truth: pl.DataFrame, predictions: dict[str, np.ndarray]) -> pl.DataFrame:
+def evaluate_on_test(truth: pd.DataFrame, predictions: dict[str, np.ndarray]) -> pd.DataFrame:
     """テスト期間の実測値と各モデルの予測から、変数別・全体のMAEを計算する。
 
     Args:
@@ -414,11 +416,11 @@ def evaluate_on_test(truth: pl.DataFrame, predictions: dict[str, np.ndarray]) ->
                 "test_mae": mae(y[valid], pred[valid]),
             }
         )
-    return pl.DataFrame(rows)
+    return pd.DataFrame(rows)
 
 
 def plot_test_forecast(
-    truth: pl.DataFrame, predictions: dict[str, np.ndarray], scores: pl.DataFrame
+    truth: pd.DataFrame, predictions: dict[str, np.ndarray], scores: pd.DataFrame
 ) -> plt.Figure:
     """変数ごとに、テスト期間の実測値と各モデルの予測を重ねて描く。
 
@@ -438,14 +440,13 @@ def plot_test_forecast(
     for ax, variable in zip(axes, TARGET_VARIABLES, strict=True):
         # この変数の行だけを取り出して描く（行順は日付順）
         mask = (truth[SERIES_COL] == variable).to_numpy()
-        dates = truth.filter(pl.col(SERIES_COL) == variable)[TIME_COL].to_list()
+        dates = truth.loc[mask, TIME_COL].tolist()
         # 評価から除外した異常値はNaNにして線を途切れさせる（縦軸が異常値に引っ張られないように）
         actual = np.where(valid[mask], truth[TARGET].to_numpy()[mask], np.nan)
         ax.plot(dates, actual, color="black", linewidth=2, label="実測")
         for model, pred in predictions.items():
-            model_mae = scores.filter(
-                (pl.col("model") == model) & (pl.col("variable") == variable)
-            )["test_mae"].item()
+            is_row = (scores["model"] == model) & (scores["variable"] == variable)
+            model_mae = scores.loc[is_row, "test_mae"].item()
             ax.plot(dates, pred[mask], alpha=0.85, label=f"{model}（MAE={model_mae:.2f}）")
         ax.set_title(variable)
         ax.set_ylabel(VARIABLE_LABELS[variable])
@@ -455,7 +456,7 @@ def plot_test_forecast(
     fig.suptitle("デリーの気候: テスト期間の再帰予測（2017年1月〜4月、3変数を1つのモデルで予測）")
     add_caption(
         fig,
-        f"学習期間の翌日から{truth[TIME_COL].n_unique()}日先までを、前年同日との差"
+        f"学習期間の翌日から{truth[TIME_COL].nunique()}日先までを、前年同日との差"
         f"（{SEASONAL_PERIOD}日の季節差分）として再帰予測し、元の尺度に戻した値。"
         f" 気圧の範囲外の実測値（{int((~valid).sum())}件）は描画・評価から除外。",
     )
@@ -483,9 +484,9 @@ def main(argv: list[str] | None = None) -> None:
     # 1. データの読み込みと整形（縦持ち: 1行 = 1日 × 1変数）
     train, test, truth = load_data()
     print(
-        f"学習: {train[TIME_COL].n_unique()}日 × {len(TARGET_VARIABLES)}変数 = {train.height}行"
+        f"学習: {train[TIME_COL].nunique()}日 × {len(TARGET_VARIABLES)}変数 = {len(train)}行"
         f"（{train[TIME_COL].min()}〜{train[TIME_COL].max()}）\n"
-        f"予測: {test[TIME_COL].n_unique()}日 × {len(TARGET_VARIABLES)}変数 = {test.height}行"
+        f"予測: {test[TIME_COL].nunique()}日 × {len(TARGET_VARIABLES)}変数 = {len(test)}行"
         f"（{test[TIME_COL].min()}〜{test[TIME_COL].max()}）"
     )
 
@@ -512,27 +513,24 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  CV MAE（再帰{HORIZON}日）={cv.oof_scores['mae']:.4f} / 参考: 1日先={onestep:.4f}")
         print(f"  出力: {results[model].output_dir}")
         # 誤差評価: 系列ごとの残差の要約（平均が0から離れていれば予測が偏っている）
-        summary = pl.read_csv(results[model].output_dir / "evaluation" / "residual_summary.csv")
+        summary = pd.read_csv(results[model].output_dir / "evaluation" / "residual_summary.csv")
         print("  誤差評価（OOF予測の残差 = 実測値 − 予測値）:")
-        print(summary.select("series", "n", "mean", "std", "skewness", "excess_kurtosis", "mae"))
+        summary_cols = ["series", "n", "mean", "std", "skewness", "excess_kurtosis", "mae"]
+        print(summary[summary_cols].to_string(index=False))
         # 時系列の残差診断: 再帰予測（recursive）と1日先予測（onestep）の残差の検定結果。
         # 再帰予測の残差は誤差が蓄積するため自己相関「あり」になるのが自然。モデルに取りこぼした
         # 過去の情報が無いかは、1日先予測の残差の自己相関で判断する
-        tests = pl.read_csv(results[model].output_dir / "evaluation" / "residual_tests.csv")
+        tests = pd.read_csv(results[model].output_dir / "evaluation" / "residual_tests.csv")
         print("  時系列の残差診断（p値: Ljung-Box=自己相関, Jarque-Bera=正規性, ADF/KPSS=定常性）:")
-        print(
-            tests.select(
-                "residual_type",
-                "series",
-                pl.col("ljung_box_p_value").alias("lb_p"),
-                pl.col("jarque_bera_p_value").alias("jb_p"),
-                pl.col("adf_p_value").alias("adf_p"),
-                pl.col("kpss_p_value").alias("kpss_p"),
-                "autocorrelation",
-                "normality",
-                "stationarity",
-            )
-        )
+        p_values = {
+            "ljung_box_p_value": "lb_p",
+            "jarque_bera_p_value": "jb_p",
+            "adf_p_value": "adf_p",
+            "kpss_p_value": "kpss_p",
+        }
+        test_cols = ["residual_type", "series", *p_values.values()]
+        test_cols += ["autocorrelation", "normality", "stationarity"]
+        print(tests.rename(columns=p_values)[test_cols].to_string(index=False))
 
     # 4. アンサンブル（保存済みのOOF予測から重みを求め、テスト予測を加重平均する）
     ensemble_tracker: Tracker = (
@@ -544,7 +542,7 @@ def main(argv: list[str] | None = None) -> None:
         output_root=root / "ensembles",
     )
     print("=== アンサンブル（OOFで重みを最適化） ===")
-    print(ensemble.scores)
+    print(ensemble.scores.to_string(index=False))
     if ensemble.weights is not None:
         print("  重み: " + ", ".join(f"{k}={v:.3f}" for k, v in ensemble.weights.items()))
 
@@ -559,7 +557,7 @@ def main(argv: list[str] | None = None) -> None:
     # 5. テスト期間の実測値との比較（表と図）
     scores = evaluate_on_test(truth, predictions)
     table_path = ensure_parent_dir(root / "tables" / "delhi_quickstart__test_mae.csv")
-    scores.write_csv(table_path)
+    scores.to_csv(table_path, index=False)
     fig = plot_test_forecast(truth, predictions, scores)
     figure_path = ensure_parent_dir(root / "figures" / "delhi_quickstart__test_forecast.png")
     fig.savefig(figure_path, dpi=150, bbox_inches="tight")
@@ -568,8 +566,11 @@ def main(argv: list[str] | None = None) -> None:
     print("=== テスト期間のMAE（実測との比較） ===")
     excluded = int((~is_valid_observation(truth)).sum())
     print(f"  気圧の範囲外 {PRESSURE_VALID_RANGE} の実測値 {excluded}件 は評価から除外")
-    # 行: 変数、列: モデル の表にして表示する
-    print(scores.pivot(on="model", index="variable", values="test_mae"))
+    # 行: 変数、列: モデル の表にして表示する（並びは scores に出てきた順）
+    table = scores.pivot(index="variable", columns="model", values="test_mae").reindex(
+        index=scores["variable"].unique(), columns=scores["model"].unique()
+    )
+    print(table)
     print(f"  表: {table_path}")
     print(f"  図: {figure_path}")
 

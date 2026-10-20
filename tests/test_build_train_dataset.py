@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import build_train_dataset as btd
-import polars as pl
+import pandas as pd
 import pytest
+from pandas_helpers import row_at
 
 # --- build_departure_time_table ---------------------------------------------
 
 
 def test_build_departure_time_table_converts_wide_to_long() -> None:
-    diagram_df = pl.DataFrame(
+    diagram_df = pd.DataFrame(
         {
             "停車場名": ["富山", "糸魚川"],
             "3500E": ["6:19", "6:50"],
@@ -21,11 +22,11 @@ def test_build_departure_time_table_converts_wide_to_long() -> None:
     result = btd.build_departure_time_table(diagram_df)
 
     assert set(result.columns) == {"停車駅名", "列車番号", "発車時刻"}
-    assert result.height == 4  # 2駅 x 2列車番号
+    assert len(result) == 4  # 2駅 x 2列車番号
 
 
 def test_build_departure_time_table_arrow_becomes_null() -> None:
-    diagram_df = pl.DataFrame(
+    diagram_df = pd.DataFrame(
         {
             "停車場名": ["富山", "糸魚川"],
             "552E": ["6:37", "↓"],
@@ -33,13 +34,13 @@ def test_build_departure_time_table_arrow_becomes_null() -> None:
     )
 
     result = btd.build_departure_time_table(diagram_df)
-    row = result.filter((pl.col("停車駅名") == "糸魚川") & (pl.col("列車番号") == "552E"))
+    row = result[(result["停車駅名"] == "糸魚川") & (result["列車番号"] == "552E")]
 
-    assert row["発車時刻"][0] is None
+    assert pd.isna(row["発車時刻"].iloc[0])
 
 
 def test_build_departure_time_table_time_values_are_preserved_as_is() -> None:
-    diagram_df = pl.DataFrame(
+    diagram_df = pd.DataFrame(
         {
             "停車場名": ["富山"],
             "3500E": ["6:19"],
@@ -48,7 +49,7 @@ def test_build_departure_time_table_time_values_are_preserved_as_is() -> None:
 
     result = btd.build_departure_time_table(diagram_df)
 
-    assert result.row(0, named=True) == {
+    assert row_at(result, 0) == {
         "停車駅名": "富山",
         "列車番号": "3500E",
         "発車時刻": "6:19",
@@ -59,8 +60,8 @@ def test_build_departure_time_table_time_values_are_preserved_as_is() -> None:
 
 
 def test_join_stop_station_location_adds_location_columns() -> None:
-    train_df = pl.DataFrame({"列車番号": ["3500E"], "停車駅名": ["富山"]})
-    location_df = pl.DataFrame(
+    train_df = pd.DataFrame({"列車番号": ["3500E"], "停車駅名": ["富山"]})
+    location_df = pd.DataFrame(
         {
             "停車場名": ["富山", "糸魚川"],
             "キロ程": [58.51, 131.543],
@@ -71,7 +72,7 @@ def test_join_stop_station_location_adds_location_columns() -> None:
 
     result = btd.join_stop_station_location(train_df, location_df)
 
-    assert result.row(0, named=True) == {
+    assert row_at(result, 0) == {
         "列車番号": "3500E",
         "停車駅名": "富山",
         "キロ程": pytest.approx(58.51),
@@ -81,24 +82,24 @@ def test_join_stop_station_location_adds_location_columns() -> None:
 
 
 def test_join_stop_station_location_preserves_row_count() -> None:
-    train_df = pl.DataFrame(
+    train_df = pd.DataFrame(
         {
             "列車番号": ["3500E", "552E", "552E"],
             "停車駅名": ["富山", "富山", "糸魚川"],
         }
     )
-    location_df = pl.DataFrame({"停車場名": ["富山", "糸魚川"], "キロ程": [58.51, 131.543]})
+    location_df = pd.DataFrame({"停車場名": ["富山", "糸魚川"], "キロ程": [58.51, 131.543]})
 
     result = btd.join_stop_station_location(train_df, location_df)
 
-    assert result.height == train_df.height
+    assert len(result) == len(train_df)
 
 
 def test_join_stop_station_location_unmatched_station_becomes_null() -> None:
-    train_df = pl.DataFrame({"列車番号": ["3500E"], "停車駅名": ["未知駅"]})
-    location_df = pl.DataFrame({"停車場名": ["富山"], "キロ程": [58.51]})
+    train_df = pd.DataFrame({"列車番号": ["3500E"], "停車駅名": ["未知駅"]})
+    location_df = pd.DataFrame({"停車場名": ["富山"], "キロ程": [58.51]})
 
     result = btd.join_stop_station_location(train_df, location_df)
 
-    assert result.height == 1
-    assert result["キロ程"][0] is None
+    assert len(result) == 1
+    assert pd.isna(result["キロ程"].iloc[0])

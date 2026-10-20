@@ -33,13 +33,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import polars as pl
+import pandas as pd
 
 from util.csv_io import read_csv_auto
 from util.paths import data_dir, ensure_parent_dir
 
 
-def build_departure_time_table(diagram_df: pl.DataFrame) -> pl.DataFrame:
+def build_departure_time_table(diagram_df: pd.DataFrame) -> pd.DataFrame:
     """diagram.csv（駅×列車番号のワイド形式）を (列車番号, 停車駅名, 発車時刻) の縦持ちに変換する。
 
     Args:
@@ -48,16 +48,13 @@ def build_departure_time_table(diagram_df: pl.DataFrame) -> pl.DataFrame:
     Returns:
         列車番号・停車駅名をキーとした発車時刻の対応表。"↓"（時刻表示なし）はnullにする。
     """
-    long_df = diagram_df.unpivot(index="停車場名", variable_name="列車番号", value_name="発車時刻")
-    return long_df.with_columns(
-        pl.when(pl.col("発車時刻") == "↓")
-        .then(None)
-        .otherwise(pl.col("発車時刻"))
-        .alias("発車時刻")
-    ).rename({"停車場名": "停車駅名"})
+    long_df = diagram_df.melt(id_vars="停車場名", var_name="列車番号", value_name="発車時刻")
+    # 時刻表示なし（"↓"）は欠損にする
+    departure = long_df["発車時刻"].mask(long_df["発車時刻"] == "↓")
+    return long_df.assign(**{"発車時刻": departure}).rename(columns={"停車場名": "停車駅名"})
 
 
-def join_stop_station_location(train_df: pl.DataFrame, location_df: pl.DataFrame) -> pl.DataFrame:
+def join_stop_station_location(train_df: pd.DataFrame, location_df: pd.DataFrame) -> pd.DataFrame:
     """train.csvにstop_station_location.csvの駅位置情報（キロ程・緯度・経度）を左結合する。
 
     train_dfの「停車駅名」とlocation_dfの「停車場名」をキーとする。location_dfは
@@ -71,7 +68,9 @@ def join_stop_station_location(train_df: pl.DataFrame, location_df: pl.DataFrame
     Returns:
         駅位置情報を付与したDataFrame。
     """
-    return train_df.join(location_df, left_on="停車駅名", right_on="停車場名", how="left")
+    joined = train_df.merge(location_df, left_on="停車駅名", right_on="停車場名", how="left")
+    # 結合キーは「停車駅名」だけを残す（右側の「停車場名」は同じ値の重複列になるため削除）
+    return joined.drop(columns="停車場名")
 
 
 def main() -> None:
@@ -83,31 +82,31 @@ def main() -> None:
 
     departure_times = build_departure_time_table(diagram_df)
 
-    n_rows_before = train_df.height
-    result = train_df.join(departure_times, on=["列車番号", "停車駅名"], how="left")
+    n_rows_before = len(train_df)
+    result = train_df.merge(departure_times, on=["列車番号", "停車駅名"], how="left")
 
     # left joinで行数が変化していないか（キーの重複によるファンアウトが無いか）を確認する
-    assert result.height == n_rows_before, (
-        f"発車時刻のjoinで行数が変化しました: {n_rows_before} -> {result.height}"
+    assert len(result) == n_rows_before, (
+        f"発車時刻のjoinで行数が変化しました: {n_rows_before} -> {len(result)}"
     )
 
-    n_missing = result["発車時刻"].null_count()
+    n_missing = int(result["発車時刻"].isna().sum())
     print(f"train.csv 行数: {n_rows_before:,}")
     print(f"発車時刻が紐付いた行数: {n_rows_before - n_missing:,}")
     print(f"発車時刻が紐付かなかった行数: {n_missing:,}")
 
     result = join_stop_station_location(result, location_df)
 
-    assert result.height == n_rows_before, (
-        f"駅位置情報のjoinで行数が変化しました: {n_rows_before} -> {result.height}"
+    assert len(result) == n_rows_before, (
+        f"駅位置情報のjoinで行数が変化しました: {n_rows_before} -> {len(result)}"
     )
 
-    n_missing_location = result["キロ程"].null_count()
+    n_missing_location = int(result["キロ程"].isna().sum())
     print(f"駅位置情報が紐付いた行数: {n_rows_before - n_missing_location:,}")
     print(f"駅位置情報が紐付かなかった行数: {n_missing_location:,}")
 
     output_path = ensure_parent_dir(data_dir() / "processed" / "train_with_departure_time.csv")
-    result.write_csv(output_path)
+    result.to_csv(output_path, index=False)
     print(f"\n保存先: {output_path}")
 
 
