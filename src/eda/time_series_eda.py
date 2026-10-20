@@ -34,10 +34,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 import seaborn as sns
 from statsmodels.tsa.stattools import acf, pacf
 
+from eda.csv_quality import is_datetime_column, is_numeric_column
 from feature_engineering.numeric import LogTransformer
 from feature_engineering.series_transform import DifferenceTransformer
 from util.paths import sanitize_filename_component
@@ -61,7 +62,7 @@ _SERIES_GRID_ORDER = list(SERIES_LABELS)
 _VALUE_COL = "value"
 
 
-def find_datetime_column(df: pl.DataFrame) -> str | None:
+def find_datetime_column(df: pd.DataFrame) -> str | None:
     """DataFrameから日時型（Datetime/Date）の列を探す。
 
     Args:
@@ -71,12 +72,12 @@ def find_datetime_column(df: pl.DataFrame) -> str | None:
         最初に見つかった日時型列の名前。存在しなければ None。
     """
     for c in df.columns:
-        if df.schema[c] in (pl.Datetime, pl.Date):
+        if is_datetime_column(df[c]):
             return c
     return None
 
 
-def find_numeric_columns(df: pl.DataFrame, exclude: tuple[str, ...] = ()) -> list[str]:
+def find_numeric_columns(df: pd.DataFrame, exclude: tuple[str, ...] = ()) -> list[str]:
     """DataFrameから数値型の列名一覧を取得する。
 
     Args:
@@ -86,10 +87,10 @@ def find_numeric_columns(df: pl.DataFrame, exclude: tuple[str, ...] = ()) -> lis
     Returns:
         数値型の列名リスト（元の列順）。
     """
-    return [c for c in df.columns if c not in exclude and df.schema[c].is_numeric()]
+    return [c for c in df.columns if c not in exclude and is_numeric_column(df[c])]
 
 
-def find_grouping_column(df: pl.DataFrame, datetime_col: str) -> str | None:
+def find_grouping_column(df: pd.DataFrame, datetime_col: str) -> str | None:
     """日時列の重複を解消できる単一の分類列を探す。
 
     複数地点・複数系列が1つのファイルに混在するパネルデータ形式（例: 気象データの地点別
@@ -104,19 +105,19 @@ def find_grouping_column(df: pl.DataFrame, datetime_col: str) -> str | None:
         (datetime_col, 当該列) の組み合わせが行数と一致する最初の非数値列名。
         日時列に重複がない場合、または該当する単一列が見つからない場合は None。
     """
-    n_rows = df.height
-    if df[datetime_col].n_unique() == n_rows:
+    n_rows = len(df)
+    if df[datetime_col].nunique(dropna=False) == n_rows:
         return None
     for c in df.columns:
-        if c == datetime_col or df.schema[c].is_numeric():
+        if c == datetime_col or is_numeric_column(df[c]):
             continue
-        if df.select([datetime_col, c]).n_unique() == n_rows:
+        if not df[[datetime_col, c]].duplicated().any():
             return c
     return None
 
 
-def to_log_series(values: pl.Series) -> pl.Series:
-    """0以下の値をnullとしたうえで自然対数変換を行う。
+def to_log_series(values: pd.Series) -> pd.Series:
+    """0以下の値を欠損としたうえで自然対数変換を行う。
 
     対数は正の値でのみ定義されるため、0以下の値は欠損として扱う。
     変換そのものは `feature_engineering.numeric.LogTransformer` で行う（モデリングと同じ定義）。
@@ -125,20 +126,20 @@ def to_log_series(values: pl.Series) -> pl.Series:
         values: 変換対象の数値Series。
 
     Returns:
-        対数変換後のSeries（0以下だった要素はnull）。元の列名を維持する。
+        対数変換後のSeries（0以下だった要素は欠損）。元の列名とインデックスを維持する。
     """
-    frame = values.cast(pl.Float64).to_frame(_VALUE_COL)
-    return LogTransformer(_VALUE_COL).fit_transform(frame)[_VALUE_COL].alias(values.name)
+    frame = values.astype(float).to_frame(_VALUE_COL)
+    return LogTransformer(_VALUE_COL).fit_transform(frame)[_VALUE_COL].rename(values.name)
 
 
-def _difference(values: pl.Series, periods: int) -> pl.Series:
+def _difference(values: pd.Series, periods: int) -> pd.Series:
     """`DifferenceTransformer` で `periods` 期前との差分を取る（元の列名を維持する）。"""
-    frame = values.cast(pl.Float64).to_frame(_VALUE_COL)
+    frame = values.astype(float).to_frame(_VALUE_COL)
     diffed = DifferenceTransformer(_VALUE_COL, periods=periods).fit_transform(frame)
-    return diffed[_VALUE_COL].alias(values.name)
+    return diffed[_VALUE_COL].rename(values.name)
 
 
-def build_transformed_series(values: pl.Series, seasonal_period: int = 7) -> dict[str, pl.Series]:
+def build_transformed_series(values: pd.Series, seasonal_period: int = 7) -> dict[str, pd.Series]:
     """原系列から6種類の変換系列を作成する。
 
     6種類 = 原系列 + `feature_engineering.series_transform` の5種類。変換は
@@ -165,7 +166,7 @@ def build_transformed_series(values: pl.Series, seasonal_period: int = 7) -> dic
     }
 
 
-def moving_average(values: pl.Series, window: int = 5) -> pl.Series:
+def moving_average(values: pd.Series, window: int = 5) -> pd.Series:
     """単純移動平均を計算する。
 
     Args:
@@ -173,12 +174,12 @@ def moving_average(values: pl.Series, window: int = 5) -> pl.Series:
         window: 移動平均の窓幅（点数）。
 
     Returns:
-        移動平均のSeries（先頭 `window - 1` 件はnull）。
+        移動平均のSeries（先頭 `window - 1` 件は欠損）。
     """
-    return values.rolling_mean(window_size=window)
+    return values.astype(float).rolling(window).mean()
 
 
-def _prepare_for_acf(values: pl.Series, max_points: int) -> np.ndarray | None:
+def _prepare_for_acf(values: pd.Series, max_points: int) -> np.ndarray | None:
     """ACF/PACF計算用に欠損除去・末尾切り詰めを行いnumpy配列に変換する。
 
     Args:
@@ -188,16 +189,16 @@ def _prepare_for_acf(values: pl.Series, max_points: int) -> np.ndarray | None:
     Returns:
         計算に十分なデータ（10点以上）があればnumpy配列、なければ None。
     """
-    non_null = values.drop_nulls()
-    if non_null.len() < 10:
+    non_null = values.dropna()
+    if len(non_null) < 10:
         return None
-    if non_null.len() > max_points:
+    if len(non_null) > max_points:
         non_null = non_null.tail(max_points)
-    return non_null.to_numpy()
+    return non_null.to_numpy(dtype=float)
 
 
 def compute_acf(
-    values: pl.Series, nlags: int = 40, max_points: int = DEFAULT_MAX_ACF_POINTS
+    values: pd.Series, nlags: int = 40, max_points: int = DEFAULT_MAX_ACF_POINTS
 ) -> np.ndarray | None:
     """自己相関係数（ACF）をラグ0からnlagsまで計算する。
 
@@ -220,7 +221,7 @@ def compute_acf(
 
 
 def compute_pacf(
-    values: pl.Series, nlags: int = 40, max_points: int = DEFAULT_MAX_ACF_POINTS
+    values: pd.Series, nlags: int = 40, max_points: int = DEFAULT_MAX_ACF_POINTS
 ) -> np.ndarray | None:
     """偏自己相関係数（PACF）をラグ0からnlagsまで計算する。
 
@@ -275,13 +276,15 @@ def break_line_at_gaps(x: np.ndarray, y: np.ndarray, gap_factor: float = 10.0) -
 
 
 def _plot_value_with_ma_ax(
-    ax: plt.Axes, dt: pl.Series, values: pl.Series, window: int, max_points: int
+    ax: plt.Axes, dt: pd.Series, values: pd.Series, window: int, max_points: int
 ) -> None:
     """1系列について生値と移動平均をAxesに描画する。"""
     ma = moving_average(values, window)
-    frame = pl.DataFrame({"dt": dt, "value": values, "ma": ma}).with_row_index("_row_idx")
-    step = max(1, frame.height // max_points)
-    sampled = frame.filter(pl.col("_row_idx") % step == 0)
+    frame = pd.DataFrame(
+        {"dt": dt.to_numpy(), "value": values.to_numpy(dtype=float), "ma": ma.to_numpy()}
+    )
+    step = max(1, len(frame) // max_points)
+    sampled = frame.iloc[::step]
     x = sampled["dt"].to_numpy()
     value_y = break_line_at_gaps(x, sampled["value"].to_numpy())
     ma_y = break_line_at_gaps(x, sampled["ma"].to_numpy())
@@ -333,8 +336,8 @@ def _new_grid_figure(
 
 
 def plot_series_with_moving_average(
-    dt: pl.Series,
-    series_dict: dict[str, pl.Series],
+    dt: pd.Series,
+    series_dict: dict[str, pd.Series],
     dataset_name: str,
     column_name: str,
     output_path: Path,
@@ -355,7 +358,7 @@ def plot_series_with_moving_average(
     Returns:
         図を保存した場合は True、原系列にデータが1件もなく作成しなかった場合は False。
     """
-    if series_dict["raw"].drop_nulls().len() == 0:
+    if series_dict["raw"].dropna().empty:
         return False
 
     fig, axes = _new_grid_figure(
@@ -363,7 +366,7 @@ def plot_series_with_moving_average(
     )
     for ax, key in zip(axes.flat, _SERIES_GRID_ORDER, strict=True):
         series = series_dict[key]
-        if series.drop_nulls().len() == 0:
+        if series.dropna().empty:
             _plot_empty_ax(ax)
         else:
             _plot_value_with_ma_ax(ax, dt, series, moving_average_window, max_points)
@@ -372,7 +375,7 @@ def plot_series_with_moving_average(
 
     add_caption(
         fig,
-        f"対象: {dataset_name} / {column_name} (n={dt.len():,}行) — "
+        f"対象: {dataset_name} / {column_name} (n={len(dt):,}行) — "
         f"6種類の変換系列の生値（薄色）と移動平均（太線、{moving_average_window}点）。",
     )
 
@@ -384,7 +387,7 @@ def plot_series_with_moving_average(
 
 
 def plot_acf_correlogram(
-    series_dict: dict[str, pl.Series],
+    series_dict: dict[str, pd.Series],
     dataset_name: str,
     column_name: str,
     output_path: Path,
@@ -404,14 +407,14 @@ def plot_acf_correlogram(
     Returns:
         図を保存した場合は True、原系列にデータが1件もなく作成しなかった場合は False。
     """
-    if series_dict["raw"].drop_nulls().len() == 0:
+    if series_dict["raw"].dropna().empty:
         return False
 
     fig, axes = _new_grid_figure(dataset_name, column_name, "自己相関係数（ACF）のコレログラム")
     for ax, key in zip(axes.flat, _SERIES_GRID_ORDER, strict=True):
         series = series_dict[key]
         acf_vals = compute_acf(series, nlags=nlags, max_points=max_points)
-        _plot_correlogram_ax(ax, acf_vals, series.drop_nulls().len())
+        _plot_correlogram_ax(ax, acf_vals, len(series.dropna()))
         ax.set_title(SERIES_LABELS[key], fontsize=11)
         ax.set_ylabel("ACF")
 
@@ -429,7 +432,7 @@ def plot_acf_correlogram(
 
 
 def plot_pacf_correlogram(
-    series_dict: dict[str, pl.Series],
+    series_dict: dict[str, pd.Series],
     dataset_name: str,
     column_name: str,
     output_path: Path,
@@ -449,14 +452,14 @@ def plot_pacf_correlogram(
     Returns:
         図を保存した場合は True、原系列にデータが1件もなく作成しなかった場合は False。
     """
-    if series_dict["raw"].drop_nulls().len() == 0:
+    if series_dict["raw"].dropna().empty:
         return False
 
     fig, axes = _new_grid_figure(dataset_name, column_name, "偏自己相関係数（PACF）のコレログラム")
     for ax, key in zip(axes.flat, _SERIES_GRID_ORDER, strict=True):
         series = series_dict[key]
         pacf_vals = compute_pacf(series, nlags=nlags, max_points=max_points)
-        _plot_correlogram_ax(ax, pacf_vals, series.drop_nulls().len())
+        _plot_correlogram_ax(ax, pacf_vals, len(series.dropna()))
         ax.set_title(SERIES_LABELS[key], fontsize=11)
         ax.set_ylabel("PACF")
 
@@ -474,7 +477,7 @@ def plot_pacf_correlogram(
 
 
 def run_time_series_checks(
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     dataset_name: str,
     figures_dir: Path,
     moving_average_window: int = 5,
@@ -508,19 +511,22 @@ def run_time_series_checks(
         return []
 
     group_col = find_grouping_column(df, dt_col)
-    if group_col is None and df[dt_col].n_unique() < df.height:
+    if group_col is None and df[dt_col].nunique(dropna=False) < len(df):
         # 日時が重複しているが単一列でグループ化できないため対象外とする
         return []
 
     if group_col is None:
         groups = {(dataset_name,): df}
     else:
-        partitions = df.partition_by(group_col, as_dict=True)
-        groups = {(f"{dataset_name}_{key[0]}",): sub_df for key, sub_df in partitions.items()}
+        # グループは出現順に並べる
+        groups = {
+            (f"{dataset_name}_{key}",): sub_df
+            for key, sub_df in df.groupby(group_col, sort=False, dropna=False)
+        }
 
     processed: list[str] = []
     for (group_name,), group_df in groups.items():
-        sorted_df = group_df.sort(dt_col)
+        sorted_df = group_df.sort_values(dt_col, kind="stable").reset_index(drop=True)
         dt = sorted_df[dt_col]
         numeric_cols = find_numeric_columns(sorted_df, exclude=(dt_col,))
 

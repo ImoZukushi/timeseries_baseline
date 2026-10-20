@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import polars as pl
+import pandas as pd
 import pytest
+from pandas_helpers import row_at
 
 from eda import csv_quality as cq
 from util.csv_io import read_csv_auto
@@ -20,9 +21,9 @@ def _write_utf8(path: Path, content: str) -> None:
 
 
 def test_dataframe_overview_counts_duplicates_and_missing() -> None:
-    df = pl.DataFrame({"a": [1, 1, 2, None], "b": ["x", "x", "y", "z"]})
+    df = pd.DataFrame({"a": [1, 1, 2, None], "b": ["x", "x", "y", "z"]})
     overview = cq.dataframe_overview(df, "sample", "sample.csv")
-    row = overview.row(0, named=True)
+    row = row_at(overview, 0)
 
     assert row["n_rows"] == 4
     assert row["n_columns"] == 2
@@ -32,17 +33,17 @@ def test_dataframe_overview_counts_duplicates_and_missing() -> None:
 
 
 def test_dataframe_overview_empty_dataframe() -> None:
-    df = pl.DataFrame({"a": pl.Series([], dtype=pl.Int64)})
+    df = pd.DataFrame({"a": pd.Series([], dtype="int64")})
     overview = cq.dataframe_overview(df, "empty", "empty.csv")
-    row = overview.row(0, named=True)
+    row = row_at(overview, 0)
     assert row["n_rows"] == 0
     assert row["duplicated_row_rate"] is None
 
 
 def test_column_overview_numeric_stats() -> None:
-    df = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, None]})
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, None]})
     overview = cq.column_overview(df, "sample")
-    row = overview.row(0, named=True)
+    row = row_at(overview, 0)
 
     assert row["is_numeric"] is True
     assert row["n_missing"] == 1
@@ -53,9 +54,9 @@ def test_column_overview_numeric_stats() -> None:
 
 
 def test_column_overview_categorical_mode() -> None:
-    df = pl.DataFrame({"c": ["a", "b", "b", "b", "c"]})
+    df = pd.DataFrame({"c": ["a", "b", "b", "b", "c"]})
     overview = cq.column_overview(df, "sample")
-    row = overview.row(0, named=True)
+    row = row_at(overview, 0)
 
     assert row["is_numeric"] is False
     assert row["mode"] == "b"
@@ -67,14 +68,14 @@ def test_column_overview_categorical_mode() -> None:
 
 
 def test_plot_missing_overview_skips_when_no_missing(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1, 2, 3]})
+    df = pd.DataFrame({"a": [1, 2, 3]})
     created = cq.plot_missing_overview(df, "sample", 3, tmp_path / "out.png")
     assert created is False
     assert not (tmp_path / "out.png").exists()
 
 
 def test_plot_missing_overview_creates_file_when_missing(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1, None, 3]})
+    df = pd.DataFrame({"a": [1, None, 3]})
     out_path = tmp_path / "missing.png"
     created = cq.plot_missing_overview(df, "sample", 3, out_path)
     assert created is True
@@ -83,13 +84,13 @@ def test_plot_missing_overview_creates_file_when_missing(tmp_path: Path) -> None
 
 
 def test_plot_numeric_histograms_skips_without_numeric_columns(tmp_path: Path) -> None:
-    df = pl.DataFrame({"c": ["a", "b", "c"]})
+    df = pd.DataFrame({"c": ["a", "b", "c"]})
     created = cq.plot_numeric_histograms(df, "sample", 3, tmp_path / "out.png")
     assert created is False
 
 
 def test_plot_numeric_histograms_creates_file(tmp_path: Path) -> None:
-    df = pl.DataFrame({"x": [1.0, 2.0, 3.0, 4.0]})
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0]})
     out_path = tmp_path / "hist.png"
     created = cq.plot_numeric_histograms(df, "sample", 4, out_path)
     assert created is True
@@ -97,7 +98,7 @@ def test_plot_numeric_histograms_creates_file(tmp_path: Path) -> None:
 
 
 def test_plot_categorical_top_values_excludes_high_cardinality(tmp_path: Path) -> None:
-    df = pl.DataFrame({"id": [str(i) for i in range(20)], "cat": ["x"] * 10 + ["y"] * 10})
+    df = pd.DataFrame({"id": [str(i) for i in range(20)], "cat": ["x"] * 10 + ["y"] * 10})
     out_path = tmp_path / "cat.png"
     created = cq.plot_categorical_top_values(df, "sample", 20, out_path, max_unique_rate=0.5)
     assert created is True
@@ -105,19 +106,19 @@ def test_plot_categorical_top_values_excludes_high_cardinality(tmp_path: Path) -
 
 
 def test_plot_categorical_top_values_skips_when_all_high_cardinality(tmp_path: Path) -> None:
-    df = pl.DataFrame({"id": [str(i) for i in range(20)]})
+    df = pd.DataFrame({"id": [str(i) for i in range(20)]})
     created = cq.plot_categorical_top_values(df, "sample", 20, tmp_path / "out.png")
     assert created is False
 
 
 def test_plot_correlation_heatmap_requires_two_numeric_columns(tmp_path: Path) -> None:
-    df = pl.DataFrame({"x": [1.0, 2.0, 3.0]})
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0]})
     created = cq.plot_correlation_heatmap(df, "sample", 3, tmp_path / "out.png")
     assert created is False
 
 
 def test_plot_correlation_heatmap_creates_file(tmp_path: Path) -> None:
-    df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0]})
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [2.0, 4.0, 6.0]})
     out_path = tmp_path / "corr.png"
     created = cq.plot_correlation_heatmap(df, "sample", 3, out_path)
     assert created is True
@@ -125,8 +126,8 @@ def test_plot_correlation_heatmap_creates_file(tmp_path: Path) -> None:
 
 
 def test_plot_correlation_heatmap_creates_file_with_nulls(tmp_path: Path) -> None:
-    # 欠損値を含んでいても（polarsのcorr()がNaNだけを返す状態にならず）図を作成できる
-    df = pl.DataFrame({"x": [1.0, 2.0, None, 4.0, 5.0], "y": [2.0, 4.0, 6.0, None, 10.0]})
+    # 欠損値を含んでいても（相関がNaNだけにならず）図を作成できる
+    df = pd.DataFrame({"x": [1.0, 2.0, None, 4.0, 5.0], "y": [2.0, 4.0, 6.0, None, 10.0]})
     out_path = tmp_path / "corr_with_nulls.png"
     created = cq.plot_correlation_heatmap(df, "sample", 5, out_path)
     assert created is True
@@ -134,7 +135,7 @@ def test_plot_correlation_heatmap_creates_file_with_nulls(tmp_path: Path) -> Non
 
 
 def test_plot_correlation_heatmap_false_when_too_few_complete_rows(tmp_path: Path) -> None:
-    df = pl.DataFrame({"x": [1.0, None, None], "y": [None, 2.0, None]})
+    df = pd.DataFrame({"x": [1.0, None, None], "y": [None, 2.0, None]})
     created = cq.plot_correlation_heatmap(df, "sample", 3, tmp_path / "out.png")
     assert created is False
 
@@ -143,21 +144,21 @@ def test_plot_correlation_heatmap_false_when_too_few_complete_rows(tmp_path: Pat
 
 
 def test_complete_case_correlation_drops_rows_with_any_null() -> None:
-    df = pl.DataFrame({"x": [1.0, 2.0, None, 4.0], "y": [2.0, 4.0, 6.0, None]})
+    df = pd.DataFrame({"x": [1.0, 2.0, None, 4.0], "y": [2.0, 4.0, 6.0, None]})
     corr, n_excluded = cq.complete_case_correlation(df, ["x", "y"])
     assert n_excluded == 2
-    assert corr["x"][1] == pytest.approx(1.0)  # x,yが完全に線形（残り2行）なので相関1.0
+    assert corr["x"].iloc[1] == pytest.approx(1.0)  # x,yが完全に線形（残り2行）なので相関1.0
 
 
 def test_complete_case_correlation_no_nulls_excludes_nothing() -> None:
-    df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [3.0, 2.0, 1.0]})
+    df = pd.DataFrame({"x": [1.0, 2.0, 3.0], "y": [3.0, 2.0, 1.0]})
     corr, n_excluded = cq.complete_case_correlation(df, ["x", "y"])
     assert n_excluded == 0
-    assert corr["x"][1] == pytest.approx(-1.0)
+    assert corr["x"].iloc[1] == pytest.approx(-1.0)
 
 
 def test_plot_record_pattern_creates_file(tmp_path: Path) -> None:
-    df = pl.DataFrame({"x": list(range(100))})
+    df = pd.DataFrame({"x": list(range(100))})
     out_path = tmp_path / "pattern.png"
     created = cq.plot_record_pattern(df, "sample", 100, out_path, max_points=10)
     assert created is True
@@ -188,8 +189,8 @@ def test_run_quality_checks_end_to_end(tmp_path: Path) -> None:
         df, dataset_name, str(path.relative_to(raw_dir)), figures_dir, tables_dir
     )
 
-    assert df_overview.row(0, named=True)["n_rows"] == 4
-    assert col_overview.height == 2
+    assert row_at(df_overview, 0)["n_rows"] == 4
+    assert len(col_overview) == 2
     assert (tables_dir / "sample__dataframe_overview.csv").exists()
     assert (tables_dir / "sample__column_overview.csv").exists()
     assert (figures_dir / "sample__missing_overview.png").exists()
@@ -224,7 +225,7 @@ def test_chunk_numeric_columns_with_remainder() -> None:
 
 
 def test_plot_scatter_matrix_requires_nonempty_row_and_col(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0]})
     created = cq.plot_scatter_matrix(df, [], ["a"], "sample", 3, tmp_path / "out.png")
     assert created is False
     assert not (tmp_path / "out.png").exists()
@@ -234,7 +235,7 @@ def test_plot_scatter_matrix_requires_nonempty_row_and_col(tmp_path: Path) -> No
 
 
 def test_plot_scatter_matrix_creates_file_for_two_columns(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [4.0, 3.0, 2.0, 1.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0, 4.0], "b": [4.0, 3.0, 2.0, 1.0]})
     out_path = tmp_path / "scatter2.png"
     created = cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 4, out_path)
     assert created is True
@@ -243,7 +244,7 @@ def test_plot_scatter_matrix_creates_file_for_two_columns(tmp_path: Path) -> Non
 
 
 def test_plot_scatter_matrix_creates_file_for_three_columns(tmp_path: Path) -> None:
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "a": [1.0, 2.0, 3.0, 4.0],
             "b": [4.0, 3.0, 2.0, 1.0],
@@ -258,7 +259,7 @@ def test_plot_scatter_matrix_creates_file_for_three_columns(tmp_path: Path) -> N
 
 def test_plot_scatter_matrix_creates_file_for_single_cell_cross_block(tmp_path: Path) -> None:
     # 行1列×列1列（異なるカラム同士）でも1セルの散布図として作成できる
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
     out_path = tmp_path / "scatter1x1.png"
     created = cq.plot_scatter_matrix(df, ["a"], ["b"], "sample", 3, out_path)
     assert created is True
@@ -266,7 +267,7 @@ def test_plot_scatter_matrix_creates_file_for_single_cell_cross_block(tmp_path: 
 
 
 def test_plot_scatter_matrix_creates_file_for_rectangular_block(tmp_path: Path) -> None:
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "a": [1.0, 2.0, 3.0, 4.0],
             "b": [4.0, 3.0, 2.0, 1.0],
@@ -281,7 +282,7 @@ def test_plot_scatter_matrix_creates_file_for_rectangular_block(tmp_path: Path) 
 
 
 def test_plot_scatter_matrix_handles_nulls_without_error(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1.0, None, 3.0, 4.0], "b": [4.0, 3.0, None, 1.0]})
+    df = pd.DataFrame({"a": [1.0, None, 3.0, 4.0], "b": [4.0, 3.0, None, 1.0]})
     out_path = tmp_path / "scatter_nulls.png"
     created = cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 4, out_path)
     assert created is True
@@ -311,7 +312,7 @@ def test_plot_scatter_matrix_diagonal_only_when_row_col_match(
     monkeypatch.setattr(plt.Axes, "hist", fake_hist)
     monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
 
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0], "c": [1.0, 1.0, 2.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0], "c": [1.0, 1.0, 2.0]})
     cq.plot_scatter_matrix(df, ["a", "b"], ["a", "c"], "sample", 3, tmp_path / "out.png")
 
     assert hist_call_count == 1
@@ -331,7 +332,7 @@ def test_plot_scatter_matrix_no_diagonal_when_rows_and_cols_disjoint(
 
     monkeypatch.setattr(plt.Axes, "hist", fake_hist)
 
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "a": [1.0, 2.0, 3.0],
             "b": [3.0, 2.0, 1.0],
@@ -355,7 +356,7 @@ def test_plot_scatter_matrix_uses_default_alpha(
         return original_scatter(self, *args, **kwargs)
 
     monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
     cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 3, tmp_path / "out.png")
 
     assert captured_alphas
@@ -373,7 +374,7 @@ def test_plot_scatter_matrix_respects_custom_alpha(
         return original_scatter(self, *args, **kwargs)
 
     monkeypatch.setattr(plt.Axes, "scatter", fake_scatter)
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [3.0, 2.0, 1.0]})
     cq.plot_scatter_matrix(df, ["a", "b"], ["a", "b"], "sample", 3, tmp_path / "out.png", alpha=0.7)
 
     assert captured_alphas
@@ -384,7 +385,7 @@ def test_plot_scatter_matrix_respects_custom_alpha(
 
 
 def test_plot_scatter_matrices_requires_two_numeric_columns(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0], "c": ["x", "y", "z"]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0], "c": ["x", "y", "z"]})
     created = cq.plot_scatter_matrices(df, "sample", 3, tmp_path)
     assert created == []
 
@@ -392,7 +393,7 @@ def test_plot_scatter_matrices_requires_two_numeric_columns(tmp_path: Path) -> N
 def test_plot_scatter_matrices_covers_all_combinations_without_omission(
     tmp_path: Path,
 ) -> None:
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "a": [1.0, 2.0, 3.0, 4.0],
             "b": [4.0, 3.0, 2.0, 1.0],
@@ -416,7 +417,7 @@ def test_plot_scatter_matrices_covers_all_combinations_without_omission(
 def test_plot_scatter_matrices_lone_trailing_column_still_covered_via_cross_block(
     tmp_path: Path,
 ) -> None:
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "a": [1.0, 2.0, 3.0, 4.0],
             "b": [4.0, 3.0, 2.0, 1.0],
@@ -435,7 +436,7 @@ def test_plot_scatter_matrices_lone_trailing_column_still_covered_via_cross_bloc
 
 
 def test_plot_scatter_matrices_sanitizes_unsafe_column_names_in_filename(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a/b": [1.0, 2.0, 3.0], "c:d": [3.0, 2.0, 1.0]})
+    df = pd.DataFrame({"a/b": [1.0, 2.0, 3.0], "c:d": [3.0, 2.0, 1.0]})
     created = cq.plot_scatter_matrices(df, "sample", 3, tmp_path)
     assert len(created) == 1
     assert created[0].exists()

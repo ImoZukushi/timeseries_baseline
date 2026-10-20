@@ -16,14 +16,30 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import polars as pl
+import pandas as pd
 import seaborn as sns
+from scipy import stats
 
 from util.paths import sanitize_filename_component
 from util.plotting import add_caption, ensure_japanese_font
 
 
-def dataframe_overview(df: pl.DataFrame, dataset_name: str, source_path: str) -> pl.DataFrame:
+def is_numeric_column(series: pd.Series) -> bool:
+    """数値の列か（真偽値の列は数値に含めない）。"""
+    return bool(pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series))
+
+
+def is_datetime_column(series: pd.Series) -> bool:
+    """日時の列か（タイムゾーン付きも含む）。"""
+    return bool(pd.api.types.is_datetime64_any_dtype(series))
+
+
+def numeric_columns(df: pd.DataFrame) -> list[str]:
+    """数値の列名（列の並び順）。"""
+    return [c for c in df.columns if is_numeric_column(df[c])]
+
+
+def dataframe_overview(df: pd.DataFrame, dataset_name: str, source_path: str) -> pd.DataFrame:
     """データフレーム全体の品質サマリを1行のテーブルとして作成する。
 
     Args:
@@ -34,14 +50,13 @@ def dataframe_overview(df: pl.DataFrame, dataset_name: str, source_path: str) ->
     Returns:
         行数・列数・重複行数・欠損セル数などを含む1行のDataFrame。
     """
-    n_rows = df.height
-    n_cols = df.width
-    n_duplicated_rows = (n_rows - df.unique().height) if n_rows > 0 else 0
+    n_rows, n_cols = df.shape
+    n_duplicated_rows = int(df.duplicated().sum()) if n_rows > 0 else 0
     total_cells = n_rows * n_cols
-    total_missing = int(df.null_count().sum_horizontal().item()) if n_cols > 0 else 0
-    n_cols_with_missing = sum(1 for c in df.columns if df[c].null_count() > 0)
+    total_missing = int(df.isna().sum().sum()) if n_cols > 0 else 0
+    n_cols_with_missing = sum(1 for c in df.columns if df[c].isna().any())
 
-    return pl.DataFrame(
+    return pd.DataFrame(
         {
             "dataset": [dataset_name],
             "source_path": [source_path],
@@ -52,12 +67,12 @@ def dataframe_overview(df: pl.DataFrame, dataset_name: str, source_path: str) ->
             "n_columns_with_missing": [n_cols_with_missing],
             "total_missing_cells": [total_missing],
             "missing_cell_rate": [total_missing / total_cells if total_cells else None],
-            "estimated_memory_mb": [df.estimated_size("mb")],
+            "estimated_memory_mb": [df.memory_usage(deep=True).sum() / 1024**2],
         }
     )
 
 
-def column_overview(df: pl.DataFrame, dataset_name: str) -> pl.DataFrame:
+def column_overview(df: pd.DataFrame, dataset_name: str) -> pd.DataFrame:
     """カラム単位の品質サマリテーブルを作成する。
 
     全列について型・欠損率・ユニーク数・最頻値とその出現率を求め、数値列については
@@ -70,24 +85,24 @@ def column_overview(df: pl.DataFrame, dataset_name: str) -> pl.DataFrame:
     Returns:
         列ごとに1行を持つ品質サマリのDataFrame。
     """
-    n_rows = df.height
+    n_rows = len(df)
     rows: list[dict[str, object]] = []
 
     for col in df.columns:
         s = df[col]
         dtype = s.dtype
-        is_numeric = dtype.is_numeric()
-        n_missing = s.null_count()
-        n_unique = s.n_unique()
-        non_null = s.drop_nulls()
+        is_numeric = is_numeric_column(s)
+        n_missing = int(s.isna().sum())
+        # 欠損も1つの値として数える
+        n_unique = int(s.nunique(dropna=False))
+        non_null = s.dropna()
 
         mode_value: object = None
         mode_rate: float | None = None
-        if non_null.len() > 0:
+        if len(non_null) > 0:
             vc = non_null.value_counts(sort=True)
-            count_col = "count"
-            mode_value = vc[col][0]
-            mode_rate = vc[count_col][0] / non_null.len()
+            mode_value = vc.index[0]
+            mode_rate = int(vc.iloc[0]) / len(non_null)
 
         row: dict[str, object] = {
             "dataset": dataset_name,
@@ -111,27 +126,30 @@ def column_overview(df: pl.DataFrame, dataset_name: str) -> pl.DataFrame:
             "skewness": None,
         }
 
-        if is_numeric and non_null.len() > 0:
+        if is_numeric and len(non_null) > 0:
+            values = non_null.astype(float)
             row.update(
                 {
-                    "mean": non_null.mean(),
-                    "std": non_null.std(),
-                    "min": non_null.min(),
-                    "p25": non_null.quantile(0.25),
-                    "median": non_null.median(),
-                    "p75": non_null.quantile(0.75),
-                    "max": non_null.max(),
-                    "skewness": non_null.skew(),
+                    "mean": values.mean(),
+                    "std": values.std(),
+                    "min": values.min(),
+                    # 分位点は実在する値のうち最も近いもの（補間しない）
+                    "p25": values.quantile(0.25, interpolation="nearest"),
+                    "median": values.median(),
+                    "p75": values.quantile(0.75, interpolation="nearest"),
+                    "max": values.max(),
+                    # 歪度は標本の偏り補正をしない値（母集団の式）
+                    "skewness": float(stats.skew(values.to_numpy(), bias=True)),
                 }
             )
 
         rows.append(row)
 
-    return pl.DataFrame(rows)
+    return pd.DataFrame(rows)
 
 
 def plot_missing_overview(
-    df: pl.DataFrame, dataset_name: str, n_rows: int, output_path: Path
+    df: pd.DataFrame, dataset_name: str, n_rows: int, output_path: Path
 ) -> bool:
     """カラム別の欠損率を棒グラフとして保存する（データフレーム全体の欠損値確認）。
 
@@ -147,7 +165,7 @@ def plot_missing_overview(
     if n_rows == 0:
         return False
 
-    missing_rates = [df[c].null_count() / n_rows for c in df.columns]
+    missing_rates = [float(df[c].isna().sum()) / n_rows for c in df.columns]
     if sum(missing_rates) == 0:
         return False
 
@@ -174,7 +192,7 @@ def plot_missing_overview(
 
 
 def plot_numeric_histograms(
-    df: pl.DataFrame, dataset_name: str, n_rows: int, output_path: Path
+    df: pd.DataFrame, dataset_name: str, n_rows: int, output_path: Path
 ) -> bool:
     """数値カラムのヒストグラムをグリッド形式で保存する。
 
@@ -187,7 +205,7 @@ def plot_numeric_histograms(
     Returns:
         図を保存した場合は True、数値カラムが存在せず作成しなかった場合は False。
     """
-    numeric_cols = [c for c in df.columns if df.schema[c].is_numeric()]
+    numeric_cols = numeric_columns(df)
     if not numeric_cols:
         return False
 
@@ -200,7 +218,7 @@ def plot_numeric_histograms(
 
     for i, col in enumerate(numeric_cols):
         ax = axes[i // ncols][i % ncols]
-        values = df[col].drop_nulls().to_numpy()
+        values = df[col].dropna().to_numpy(dtype=float)
         if values.size == 0:
             ax.set_visible(False)
             continue
@@ -224,7 +242,7 @@ def plot_numeric_histograms(
 
 
 def plot_categorical_top_values(
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     dataset_name: str,
     n_rows: int,
     output_path: Path,
@@ -252,9 +270,9 @@ def plot_categorical_top_values(
 
     cat_cols = []
     for c in df.columns:
-        if df.schema[c].is_numeric() or df.schema[c] in (pl.Datetime, pl.Date):
+        if is_numeric_column(df[c]) or is_datetime_column(df[c]):
             continue
-        n_unique = df[c].n_unique()
+        n_unique = df[c].nunique(dropna=False)
         if n_unique / n_rows > max_unique_rate:
             continue
         cat_cols.append(c)
@@ -270,9 +288,9 @@ def plot_categorical_top_values(
 
     for i, col in enumerate(cat_cols):
         ax = axes[i // ncols][i % ncols]
-        vc = df[col].drop_nulls().value_counts(sort=True).head(top_n)
-        labels = [str(v) for v in vc[col].to_list()]
-        counts = vc["count"].to_list()
+        vc = df[col].dropna().value_counts(sort=True).head(top_n)
+        labels = [str(v) for v in vc.index.tolist()]
+        counts = vc.tolist()
         ax.barh(labels, counts, color=sns.color_palette("muted")[1])
         ax.invert_yaxis()
         ax.set_title(col, fontsize=11)
@@ -295,13 +313,13 @@ def plot_categorical_top_values(
 
 
 def complete_case_correlation(
-    df: pl.DataFrame, numeric_cols: list[str]
-) -> tuple[pl.DataFrame, int]:
+    df: pd.DataFrame, numeric_cols: list[str]
+) -> tuple[pd.DataFrame, int]:
     """数値カラムのいずれかに欠損値がある行を除外してピアソン相関係数を算出する。
 
-    polarsの `DataFrame.corr()` は、対象カラムに欠損値を含む行が1件でもあると
-    相関行列全体がNaNになってしまうため、事前にリストワイズ削除（対象カラムの
-    いずれかがnullの行をまとめて除外）してから算出する。
+    pandas の `DataFrame.corr()` は列の組ごとに欠損を除いて計算する（ペアワイズ）ため、
+    組ごとに使う行が変わる。全組で同じ行を使うよう、事前にリストワイズ削除（対象カラムの
+    いずれかが欠損の行をまとめて除外）してから算出する。
 
     Args:
         df: 対象のDataFrame。
@@ -310,19 +328,19 @@ def complete_case_correlation(
     Returns:
         (相関行列のDataFrame, 欠損値により除外した行数) のタプル。
     """
-    numeric_df = df.select(numeric_cols)
-    complete_df = numeric_df.drop_nulls()
-    n_excluded = numeric_df.height - complete_df.height
+    numeric_df = df[numeric_cols].astype(float)
+    complete_df = numeric_df.dropna()
+    n_excluded = len(numeric_df) - len(complete_df)
     return complete_df.corr(), n_excluded
 
 
 def plot_correlation_heatmap(
-    df: pl.DataFrame, dataset_name: str, n_rows: int, output_path: Path
+    df: pd.DataFrame, dataset_name: str, n_rows: int, output_path: Path
 ) -> bool:
     """数値カラム間のピアソン相関係数をヒートマップとして保存する。
 
     数値カラムのいずれかに欠損値がある行は、相関係数の算出前に除外する
-    （polarsの `corr()` は欠損値を含む行があると全体がNaNになるため）。
+    （全組で同じ行を使って算出するため）。
     除外した場合は、除外した行数をキャプションに明記する。
 
     Args:
@@ -335,7 +353,7 @@ def plot_correlation_heatmap(
         図を保存した場合は True、数値カラムが2列未満、または欠損値を除いた結果
         相関係数を算出できるサンプルが2件未満だった場合は False。
     """
-    numeric_cols = [c for c in df.columns if df.schema[c].is_numeric()]
+    numeric_cols = numeric_columns(df)
     if len(numeric_cols) < 2:
         return False
 
@@ -373,7 +391,7 @@ def plot_correlation_heatmap(
 
 
 def plot_record_pattern(
-    df: pl.DataFrame, dataset_name: str, n_rows: int, output_path: Path, max_points: int = 5000
+    df: pd.DataFrame, dataset_name: str, n_rows: int, output_path: Path, max_points: int = 5000
 ) -> bool:
     """数値カラムを行の並び順に沿って間引きプロットし、記録誤りや外れ値を目視確認する。
 
@@ -389,16 +407,17 @@ def plot_record_pattern(
     Returns:
         図を保存した場合は True、数値カラムが存在せず作成しなかった場合は False。
     """
-    numeric_cols = [c for c in df.columns if df.schema[c].is_numeric()]
+    numeric_cols = numeric_columns(df)
     if not numeric_cols or n_rows == 0:
         return False
 
-    datetime_cols = [c for c in df.columns if df.schema[c] in (pl.Datetime, pl.Date)]
+    datetime_cols = [c for c in df.columns if is_datetime_column(df[c])]
     x_col = datetime_cols[0] if datetime_cols else None
 
     step = max(1, n_rows // max_points)
-    sampled = df.with_row_index("_row_idx").filter(pl.col("_row_idx") % step == 0)
-    x = sampled[x_col].to_numpy() if x_col else sampled["_row_idx"].to_numpy()
+    positions = list(range(0, len(df), step))
+    sampled = df.iloc[positions]
+    x = sampled[x_col].to_numpy() if x_col else positions
 
     ncols = min(4, len(numeric_cols))
     nrows = -(-len(numeric_cols) // ncols)
@@ -409,7 +428,7 @@ def plot_record_pattern(
 
     for i, col in enumerate(numeric_cols):
         ax = axes[i // ncols][i % ncols]
-        y = sampled[col].to_numpy()
+        y = sampled[col].to_numpy(dtype=float, na_value=float("nan"))
         ax.plot(x, y, lw=0, marker=".", markersize=2, color=sns.color_palette("muted")[2])
         ax.set_title(col, fontsize=11)
         if x_col:
@@ -446,7 +465,7 @@ def chunk_numeric_columns(columns: list[str], max_per_chunk: int = 3) -> list[li
 
 
 def plot_scatter_matrix(
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     row_columns: list[str],
     col_columns: list[str],
     dataset_name: str,
@@ -491,12 +510,12 @@ def plot_scatter_matrix(
         for j, col_col in enumerate(col_columns):
             ax = axes[i][j]
             if row_col == col_col:
-                values = df[row_col].drop_nulls().to_numpy()
+                values = df[row_col].dropna().to_numpy(dtype=float)
                 if values.size > 0:
                     ax.hist(values, bins=30, color=color)
             else:
-                pair = df.select([col_col, row_col]).drop_nulls()
-                if pair.height > 0:
+                pair = df[[col_col, row_col]].dropna()
+                if len(pair) > 0:
                     ax.scatter(
                         pair[col_col],
                         pair[row_col],
@@ -528,7 +547,7 @@ def plot_scatter_matrix(
 
 
 def plot_scatter_matrices(
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     dataset_name: str,
     n_rows: int,
     figures_dir: Path,
@@ -555,7 +574,7 @@ def plot_scatter_matrices(
     Returns:
         作成した画像ファイルのパスのリスト。
     """
-    numeric_cols = [c for c in df.columns if df.schema[c].is_numeric()]
+    numeric_cols = numeric_columns(df)
     chunks = chunk_numeric_columns(numeric_cols, max_cols_per_image)
 
     created: list[Path] = []
@@ -599,12 +618,12 @@ def make_dataset_name(path: Path, raw_dir: Path) -> str:
 
 
 def run_quality_checks(
-    df: pl.DataFrame,
+    df: pd.DataFrame,
     dataset_name: str,
     source_path: str,
     figures_dir: Path,
     tables_dir: Path,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """読み込み済みのDataFrameに対してデータ品質確認を実施し、表と図を保存する。
 
     大容量ファイルを複数回読み込まずに済むよう、CSVの読み込みは呼び出し側
@@ -620,14 +639,14 @@ def run_quality_checks(
     Returns:
         (データフレーム全体サマリの1行DataFrame, カラム単位サマリのN行DataFrame)。
     """
-    n_rows = df.height
+    n_rows = len(df)
 
     df_overview = dataframe_overview(df, dataset_name, source_path)
     col_overview = column_overview(df, dataset_name)
 
     tables_dir.mkdir(parents=True, exist_ok=True)
-    df_overview.write_csv(tables_dir / f"{dataset_name}__dataframe_overview.csv")
-    col_overview.write_csv(tables_dir / f"{dataset_name}__column_overview.csv")
+    df_overview.to_csv(tables_dir / f"{dataset_name}__dataframe_overview.csv", index=False)
+    col_overview.to_csv(tables_dir / f"{dataset_name}__column_overview.csv", index=False)
 
     plot_missing_overview(
         df, dataset_name, n_rows, figures_dir / f"{dataset_name}__missing_overview.png"

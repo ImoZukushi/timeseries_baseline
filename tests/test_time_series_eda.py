@@ -6,15 +6,16 @@ import datetime as dt
 from pathlib import Path
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
+from pandas_helpers import as_list
 
 from eda import time_series_eda as tse
 
 
-def _dates(n: int, start: str = "2020-01-01") -> pl.Series:
+def _dates(n: int, start: str = "2020-01-01") -> pd.Series:
     start_date = dt.date.fromisoformat(start)
-    return pl.Series([start_date + dt.timedelta(days=i) for i in range(n)])
+    return pd.Series(pd.to_datetime([start_date + dt.timedelta(days=i) for i in range(n)]))
 
 
 # --- sanitize_filename_component ----------------------------------------------
@@ -34,17 +35,17 @@ def test_sanitize_filename_component_leaves_safe_text_unchanged() -> None:
 
 
 def test_find_datetime_column_found() -> None:
-    df = pl.DataFrame({"ts": _dates(3), "v": [1, 2, 3]})
+    df = pd.DataFrame({"ts": _dates(3), "v": [1, 2, 3]})
     assert tse.find_datetime_column(df) == "ts"
 
 
 def test_find_datetime_column_none() -> None:
-    df = pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
+    df = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]})
     assert tse.find_datetime_column(df) is None
 
 
 def test_find_numeric_columns_excludes_given_column() -> None:
-    df = pl.DataFrame({"ts": _dates(3), "v": [1.0, 2.0, 3.0], "c": ["a", "b", "c"]})
+    df = pd.DataFrame({"ts": _dates(3), "v": [1.0, 2.0, 3.0], "c": ["a", "b", "c"]})
     assert tse.find_numeric_columns(df, exclude=("ts",)) == ["v"]
 
 
@@ -52,13 +53,13 @@ def test_find_numeric_columns_excludes_given_column() -> None:
 
 
 def test_find_grouping_column_no_duplicates_returns_none() -> None:
-    df = pl.DataFrame({"ts": _dates(5), "v": range(5)})
+    df = pd.DataFrame({"ts": _dates(5), "v": range(5)})
     assert tse.find_grouping_column(df, "ts") is None
 
 
 def test_find_grouping_column_resolved_by_single_column() -> None:
     dates = list(_dates(3)) * 2
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "ts": dates,
             "site": ["A", "A", "A", "B", "B", "B"],
@@ -70,7 +71,7 @@ def test_find_grouping_column_resolved_by_single_column() -> None:
 
 def test_find_grouping_column_unresolvable_returns_none() -> None:
     # (ts, key1) だけでも (ts, key2) だけでも重複が解消できないケース
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "ts": ["2020-01-01", "2020-01-01", "2020-01-01", "2020-01-01"],
             "key1": ["A", "A", "B", "B"],
@@ -85,33 +86,33 @@ def test_find_grouping_column_unresolvable_returns_none() -> None:
 
 
 def test_to_log_series_masks_non_positive_values() -> None:
-    values = pl.Series("v", [1.0, np.e, -1.0, 0.0, None])
+    values = pd.Series(name="v", data=[1.0, np.e, -1.0, 0.0, None])
     result = tse.to_log_series(values)
-    assert result.to_list()[0] == pytest.approx(0.0)
-    assert result.to_list()[1] == pytest.approx(1.0)
-    assert result.to_list()[2] is None
-    assert result.to_list()[3] is None
-    assert result.to_list()[4] is None
+    assert result.pipe(as_list)[0] == pytest.approx(0.0)
+    assert result.pipe(as_list)[1] == pytest.approx(1.0)
+    assert result.pipe(as_list)[2] is None
+    assert result.pipe(as_list)[3] is None
+    assert result.pipe(as_list)[4] is None
     assert result.name == "v"
 
 
 def test_build_transformed_series_has_expected_keys() -> None:
-    values = pl.Series("v", [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0])
+    values = pd.Series(name="v", data=[1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0])
     result = tse.build_transformed_series(values, seasonal_period=2)
     assert set(result.keys()) == set(tse.SERIES_LABELS.keys())
 
 
 def test_build_transformed_series_diff_values() -> None:
-    values = pl.Series("v", [10.0, 12.0, 15.0, 11.0])
+    values = pd.Series(name="v", data=[10.0, 12.0, 15.0, 11.0])
     result = tse.build_transformed_series(values, seasonal_period=2)
-    assert result["diff"].to_list() == [None, 2.0, 3.0, -4.0]
-    assert result["seasonal_diff"].to_list() == [None, None, 5.0, -1.0]
+    assert result["diff"].pipe(as_list) == [None, 2.0, 3.0, -4.0]
+    assert result["seasonal_diff"].pipe(as_list) == [None, None, 5.0, -1.0]
 
 
 def test_build_transformed_series_log_diff_values() -> None:
-    values = pl.Series("v", [1.0, np.e, np.e**2])
+    values = pd.Series(name="v", data=[1.0, np.e, np.e**2])
     result = tse.build_transformed_series(values, seasonal_period=1)
-    log_diff = result["log_diff"].to_list()
+    log_diff = result["log_diff"].pipe(as_list)
     assert log_diff[0] is None
     assert log_diff[1] == pytest.approx(1.0)
     assert log_diff[2] == pytest.approx(1.0)
@@ -121,9 +122,9 @@ def test_build_transformed_series_log_diff_values() -> None:
 
 
 def test_moving_average_basic() -> None:
-    values = pl.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+    values = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
     result = tse.moving_average(values, window=3)
-    assert result.to_list() == [None, None, 2.0, 3.0, 4.0]
+    assert result.pipe(as_list) == [None, None, 2.0, 3.0, 4.0]
 
 
 # --- break_line_at_gaps ---------------------------------------------------------
@@ -169,13 +170,13 @@ def test_break_line_at_gaps_too_short_returns_unchanged() -> None:
 
 
 def test_compute_acf_none_when_insufficient_data() -> None:
-    values = pl.Series([1.0, 2.0, 3.0])
+    values = pd.Series([1.0, 2.0, 3.0])
     assert tse.compute_acf(values, nlags=5) is None
 
 
 def test_compute_acf_lag_zero_is_one() -> None:
     rng = np.random.default_rng(0)
-    values = pl.Series(rng.normal(size=200))
+    values = pd.Series(rng.normal(size=200))
     result = tse.compute_acf(values, nlags=10)
     assert result is not None
     assert result[0] == pytest.approx(1.0)
@@ -184,20 +185,20 @@ def test_compute_acf_lag_zero_is_one() -> None:
 
 def test_compute_acf_truncates_to_max_points() -> None:
     rng = np.random.default_rng(0)
-    values = pl.Series(rng.normal(size=100_000))
+    values = pd.Series(rng.normal(size=100_000))
     result = tse.compute_acf(values, nlags=5, max_points=1_000)
     assert result is not None
     assert result[0] == pytest.approx(1.0)
 
 
 def test_compute_pacf_none_when_insufficient_data() -> None:
-    values = pl.Series([1.0, 2.0, 3.0])
+    values = pd.Series([1.0, 2.0, 3.0])
     assert tse.compute_pacf(values, nlags=5) is None
 
 
 def test_compute_pacf_lag_zero_is_one() -> None:
     rng = np.random.default_rng(0)
-    values = pl.Series(rng.normal(size=200))
+    values = pd.Series(rng.normal(size=200))
     result = tse.compute_pacf(values, nlags=10)
     assert result is not None
     assert result[0] == pytest.approx(1.0)
@@ -205,7 +206,7 @@ def test_compute_pacf_lag_zero_is_one() -> None:
 
 def test_compute_acf_ignores_nulls() -> None:
     rng = np.random.default_rng(1)
-    values = pl.Series([None, None, *rng.normal(size=200).tolist()])
+    values = pd.Series([None, None, *rng.normal(size=200).tolist()])
     result = tse.compute_acf(values, nlags=5)
     assert result is not None
     assert result[0] == pytest.approx(1.0)
@@ -216,10 +217,12 @@ def test_compute_acf_ignores_nulls() -> None:
 
 def _sample_series_dict(
     n: int = 200, seasonal_period: int = 7
-) -> tuple[pl.Series, dict[str, pl.Series]]:
-    dt_series = pl.Series([dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)])
+) -> tuple[pd.Series, dict[str, pd.Series]]:
+    dt_series = pd.Series(
+        pd.to_datetime([dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)])
+    )
     rng = np.random.default_rng(0)
-    values = pl.Series("v", np.abs(rng.normal(loc=10, scale=2, size=n)))
+    values = pd.Series(name="v", data=np.abs(rng.normal(loc=10, scale=2, size=n)))
     return dt_series, tse.build_transformed_series(values, seasonal_period=seasonal_period)
 
 
@@ -233,8 +236,8 @@ def test_plot_series_with_moving_average_creates_file(tmp_path: Path) -> None:
 
 
 def test_plot_series_with_moving_average_false_when_empty(tmp_path: Path) -> None:
-    dt_series = pl.Series([dt.date(2020, 1, 1)])
-    empty = pl.Series("v", [None], dtype=pl.Float64)
+    dt_series = pd.Series(pd.to_datetime([dt.date(2020, 1, 1)]))
+    empty = pd.Series(name="v", data=[None], dtype="float64")
     series_dict = tse.build_transformed_series(empty)
     created = tse.plot_series_with_moving_average(
         dt_series, series_dict, "sample", "v", tmp_path / "out.png"
@@ -263,7 +266,7 @@ def test_plot_pacf_correlogram_creates_file(tmp_path: Path) -> None:
 
 
 def test_run_time_series_checks_returns_empty_without_datetime_column(tmp_path: Path) -> None:
-    df = pl.DataFrame({"a": [1.0, 2.0, 3.0]})
+    df = pd.DataFrame({"a": [1.0, 2.0, 3.0]})
     result = tse.run_time_series_checks(df, "sample", tmp_path)
     assert result == []
     assert list(tmp_path.glob("*.png")) == []
@@ -272,9 +275,9 @@ def test_run_time_series_checks_returns_empty_without_datetime_column(tmp_path: 
 def test_run_time_series_checks_single_series(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     n = 200
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
-            "ts": [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)],
+            "ts": pd.to_datetime([dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)]),
             "value": np.abs(rng.normal(loc=10, scale=2, size=n)),
         }
     )
@@ -289,17 +292,18 @@ def test_run_time_series_checks_grouped_panel_data(tmp_path: Path) -> None:
     rng = np.random.default_rng(0)
     n = 60
     dates = [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)]
-    df = pl.concat(
+    df = pd.concat(
         [
-            pl.DataFrame(
+            pd.DataFrame(
                 {
-                    "ts": dates,
+                    "ts": pd.to_datetime(dates),
                     "site": [site] * n,
                     "value": np.abs(rng.normal(loc=10, scale=2, size=n)),
                 }
             )
             for site in ["A", "B"]
-        ]
+        ],
+        ignore_index=True,
     )
     result = tse.run_time_series_checks(df, "sample", tmp_path, nlags=5)
     assert sorted(result) == ["sample_A:value", "sample_B:value"]
@@ -312,17 +316,18 @@ def test_run_time_series_checks_sanitizes_group_value_in_filename(tmp_path: Path
     rng = np.random.default_rng(0)
     n = 30
     dates = [dt.date(2020, 1, 1) + dt.timedelta(days=i) for i in range(n)]
-    df = pl.concat(
+    df = pd.concat(
         [
-            pl.DataFrame(
+            pd.DataFrame(
                 {
-                    "ts": dates,
+                    "ts": pd.to_datetime(dates),
                     "time_of_day": [time_str] * n,
                     "value": np.abs(rng.normal(loc=10, scale=2, size=n)),
                 }
             )
             for time_str in ["06:41:00", "19:33:00"]
-        ]
+        ],
+        ignore_index=True,
     )
     result = tse.run_time_series_checks(df, "sample", tmp_path, nlags=5)
     assert sorted(result) == ["sample_06:41:00:value", "sample_19:33:00:value"]
@@ -332,14 +337,14 @@ def test_run_time_series_checks_sanitizes_group_value_in_filename(tmp_path: Path
 
 
 def test_run_time_series_checks_unresolvable_duplicates_returns_empty(tmp_path: Path) -> None:
-    df = pl.DataFrame(
+    df = pd.DataFrame(
         {
             "ts": ["2020-01-01", "2020-01-01", "2020-01-01", "2020-01-01"],
             "key1": ["A", "A", "B", "B"],
             "key2": ["X", "Y", "X", "Y"],
             "value": [1.0, 2.0, 3.0, 4.0],
         }
-    ).with_columns(pl.col("ts").str.to_datetime())
+    ).assign(ts=lambda d: pd.to_datetime(d["ts"]))
     result = tse.run_time_series_checks(df, "sample", tmp_path)
     assert result == []
     assert list(tmp_path.glob("*.png")) == []
@@ -349,10 +354,12 @@ def test_build_transformed_series_matches_series_transformers() -> None:
     from feature_engineering.series_transform import SERIES_TRANSFORM_KINDS, make_series_transformer
 
     # 正の値だけの系列では、EDAの6系列と前処理用transformerの出力が一致する
-    values = pl.Series("v", [3.0, 5.0, 4.0, 8.0, 9.0, 7.0, 12.0, 15.0])
+    values = pd.Series(name="v", data=[3.0, 5.0, 4.0, 8.0, 9.0, 7.0, 12.0, 15.0])
     result = tse.build_transformed_series(values, seasonal_period=3)
     frame = values.to_frame()
     for kind in SERIES_TRANSFORM_KINDS:
         expected = make_series_transformer(kind, "v", seasonal_period=3).fit_transform(frame)["v"]
-        assert result[kind].to_list() == pytest.approx(expected.to_list(), nan_ok=True), kind
+        assert result[kind].pipe(as_list) == pytest.approx(expected.pipe(as_list), nan_ok=True), (
+            kind
+        )
         assert result[kind].name == "v"
