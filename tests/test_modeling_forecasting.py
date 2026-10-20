@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 import yaml
+from pandas_helpers import as_list, row_at
 from pydantic import ValidationError
 
 from modeling.config import ExperimentConfig, ForecastConfig
@@ -26,7 +27,7 @@ from modeling.trainer import fit_pipeline
 START = dt.date(2024, 1, 1)
 
 
-def _panel(n_days: int = 120, seed: int = 0, noise: float = 1.0) -> pl.DataFrame:
+def _panel(n_days: int = 120, seed: int = 0, noise: float = 1.0) -> pd.DataFrame:
     """2系列のパネルデータ（AR(1) + 週次の季節性）。曜日は将来も既知の外生変数。"""
     rng = np.random.default_rng(seed)
     rows = []
@@ -37,7 +38,12 @@ def _panel(n_days: int = 120, seed: int = 0, noise: float = 1.0) -> pl.DataFrame
             rows.append(
                 {"date": START + dt.timedelta(days=t), "sid": sid, "dow": t % 7, "y": float(y)}
             )
-    return pl.DataFrame(rows).sort("date", "sid")
+    return (
+        pd.DataFrame(rows)
+        .assign(date=lambda d: pd.to_datetime(d["date"]))
+        .sort_values(["date", "sid"], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def _raw_config(**overrides: Any) -> dict[str, Any]:
@@ -52,7 +58,7 @@ def _raw_config(**overrides: Any) -> dict[str, Any]:
         },
         "features": [
             {
-                "class": "feature_engineering.categorical.PolarsOrdinalEncoder",
+                "class": "feature_engineering.categorical.PandasOrdinalEncoder",
                 "params": {"variables": ["sid"]},
             }
         ],
@@ -96,28 +102,28 @@ def _builder(**kwargs: Any) -> TargetFeatureBuilder:
 
 
 def test_target_features_use_only_past_values() -> None:
-    frame = pl.DataFrame({"t": [1, 2, 3, 4, 5], "y": [1.0, 2.0, 3.0, 4.0, 5.0]})
+    frame = pd.DataFrame({"t": [1, 2, 3, 4, 5], "y": [1.0, 2.0, 3.0, 4.0, 5.0]})
     builder = _builder(lags=[1, 2], rolling_windows=[2], rate_of_change=True)
     out = builder.build(frame)
     assert builder.feature_names == ["y_lag_1", "y_lag_2", "y_lag_1_ma_2", "y_lag_1_roc_1"]
-    row = out.row(3, named=True)  # y=4 の行
+    row = row_at(out, 3)  # y=4 の行
     assert row["y_lag_1"] == 3.0
     assert row["y_lag_2"] == 2.0
     assert row["y_lag_1_ma_2"] == pytest.approx(2.5)  # (y_{t-1} + y_{t-2}) / 2
     assert row["y_lag_1_roc_1"] == pytest.approx(0.5)  # (3 - 2) / 2
     # 行tの値を変えても行tの特徴量は変わらない（y_t を含まない）
-    changed = builder.build(frame.with_columns(pl.Series("y", [1.0, 2.0, 3.0, 999.0, 5.0])))
-    assert changed.row(3, named=True)["y_lag_1_ma_2"] == pytest.approx(2.5)
+    changed = builder.build(frame.assign(y=[1.0, 2.0, 3.0, 999.0, 5.0]))
+    assert row_at(changed, 3)["y_lag_1_ma_2"] == pytest.approx(2.5)
 
 
 def test_target_features_per_series_and_order_preserved() -> None:
-    frame = pl.DataFrame(
+    frame = pd.DataFrame(
         {"s": ["A", "B", "A", "B"], "t": [2, 2, 1, 1], "y": [2.0, 20.0, 1.0, 10.0]}
     )
     builder = TargetFeatureBuilder("y", "t", ForecastConfig(series_col="s", lags=[1]))
     out = builder.build(frame)
     # 入力の行順のまま、系列内の時刻順でラグが付く
-    assert out["y_lag_1"].to_list() == [1.0, 10.0, None, None]
+    assert out["y_lag_1"].pipe(as_list) == [1.0, 10.0, None, None]
     assert builder.lookback == 1
 
 
@@ -127,7 +133,7 @@ def test_lookback() -> None:
 
 
 def test_step_index() -> None:
-    frame = pl.DataFrame({"s": ["A", "B", "A", "A", "B"], "t": [5, 9, 3, 4, 8]})
+    frame = pd.DataFrame({"s": ["A", "B", "A", "A", "B"], "t": [5, 9, 3, 4, 8]})
     assert step_index(frame, "t", "s").tolist() == [3, 2, 1, 2, 1]
     assert step_index(frame, "t", None).tolist() == [3, 5, 1, 2, 4]
 
@@ -135,9 +141,9 @@ def test_step_index() -> None:
 # --- 再帰予測 --------------------------------------------------------------------------
 
 
-def _ar_frame(n: int = 60) -> pl.DataFrame:
+def _ar_frame(n: int = 60) -> pd.DataFrame:
     """y_t = 0.9 * y_{t-1} の決定的な系列。"""
-    return pl.DataFrame({"t": np.arange(n), "y": 100.0 * 0.9 ** np.arange(n)})
+    return pd.DataFrame({"t": np.arange(n), "y": 100.0 * 0.9 ** np.arange(n)})
 
 
 def _linear_config() -> ExperimentConfig:
@@ -154,9 +160,9 @@ def _linear_config() -> ExperimentConfig:
     )
 
 
-def _fit_ar(frame: pl.DataFrame, config: ExperimentConfig) -> Any:
+def _fit_ar(frame: pd.DataFrame, config: ExperimentConfig) -> Any:
     builder = make_builder(config)
-    X = builder.build(frame).select(builder.feature_names)
+    X = builder.build(frame)[builder.feature_names]
     # 先頭行はラグが無いので学習から除く（決定的な関係を正確に学習させるため）
     return fit_pipeline(config, X[1:], frame["y"].to_numpy()[1:]), builder, X.columns
 
@@ -175,8 +181,8 @@ def test_recursive_forecast_ignores_future_target_values() -> None:
     frame = _ar_frame()
     pipeline, builder, columns = _fit_ar(frame[:40], config)
     future = frame[40:50]
-    garbage = future.with_columns(pl.lit(-1e9).alias("y"))
-    no_target = future.drop("y")
+    garbage = future.assign(y=-1e9)
+    no_target = future.drop(columns="y")
     base = recursive_forecast(pipeline, frame[:40], future, builder, columns)
     assert recursive_forecast(pipeline, frame[:40], garbage, builder, columns) == pytest.approx(
         base
@@ -191,11 +197,11 @@ def test_recursive_forecast_clip_is_applied_during_recursion() -> None:
     raw["forecast"]["clip"] = {"min": 0.0}
     config = ExperimentConfig.model_validate(raw)
     # 毎期10ずつ減る系列 → 線形外挿は負になるが、clipで0に止まる
-    frame = pl.DataFrame({"t": np.arange(30), "y": 200.0 - 10.0 * np.arange(30)})
+    frame = pd.DataFrame({"t": np.arange(30), "y": 200.0 - 10.0 * np.arange(30)})
     builder = make_builder(config)
-    X = builder.build(frame).select(builder.feature_names)
+    X = builder.build(frame)[builder.feature_names]
     pipeline = fit_pipeline(config, X[1:], frame["y"].to_numpy()[1:])
-    future = pl.DataFrame({"t": np.arange(30, 60)})
+    future = pd.DataFrame({"t": np.arange(30, 60)})
     pred = recursive_forecast(pipeline, frame, future, builder, X.columns)
     assert (pred >= 0).all()
     assert pred[-1] == pytest.approx(0.0, abs=1e-6)
@@ -207,13 +213,12 @@ def test_recursive_forecast_series_are_independent() -> None:
     assert ds.frame is not None
     pipeline = fit_pipeline(config, ds.X, ds.y)
     builder = make_builder(config)
-    history = ds.frame.filter(pl.col("date") < dt.date(2024, 4, 1))
-    future = ds.frame.filter(pl.col("date") >= dt.date(2024, 4, 1))
+    cutoff = pd.Timestamp(2024, 4, 1)
+    history = ds.frame[ds.frame["date"] < cutoff]
+    future = ds.frame[ds.frame["date"] >= cutoff]
     base = recursive_forecast(pipeline, history, future, builder, ds.X.columns)
     # 系列Bの履歴を書き換えても、系列Aの予測は変わらない
-    shifted = history.with_columns(
-        pl.when(pl.col("sid") == "B").then(pl.col("y") + 1000).otherwise(pl.col("y")).alias("y")
-    )
+    shifted = history.assign(y=history["y"].where(history["sid"] != "B", history["y"] + 1000))
     changed = recursive_forecast(pipeline, shifted, future, builder, ds.X.columns)
     is_a = (future["sid"] == "A").to_numpy()
     assert changed[is_a] == pytest.approx(base[is_a])
@@ -234,18 +239,14 @@ def test_recursive_forecast_requires_future_after_history() -> None:
 def test_backtest_does_not_use_validation_targets() -> None:
     config = _config(cv={"method": "time_cutoff", "cutoffs": ["2024-04-01"]})
     frame = _panel()
-    cutoff = dt.date(2024, 4, 1)
+    cutoff = pd.Timestamp(2024, 4, 1)
     ds = prepare_dataset(config, frame)
     assert ds.frame is not None
     base = recursive_backtest(config, ds.frame, ds.X, ds.y, ds.folds)
     # 検証期間の目的変数を乱数に置き換えても、再帰予測（OOF）は変わらない
     rng = np.random.default_rng(1)
-    tampered = frame.with_columns(
-        pl.when(pl.col("date") >= cutoff)
-        .then(pl.lit(rng.normal(size=frame.height) * 1000))
-        .otherwise(pl.col("y"))
-        .alias("y")
-    )
+    noise = pd.Series(rng.normal(size=len(frame)) * 1000, index=frame.index)
+    tampered = frame.assign(y=frame["y"].where(frame["date"] < cutoff, noise))
     ds2 = prepare_dataset(config, tampered)
     assert ds2.frame is not None
     again = recursive_backtest(config, ds2.frame, ds2.X, ds2.y, ds2.folds)
@@ -268,8 +269,8 @@ def test_backtest_horizon_truncation_and_scores() -> None:
     assert np.isnan(result.oof_pred[~predicted]).all()
     assert set(result.steps[predicted].tolist()) == {1, 2, 3, 4, 5}
     hs = result.horizon_scores
-    assert hs["step"].to_list() == [1, 2, 3, 4, 5]
-    assert hs["n"].to_list() == [4] * 5
+    assert hs["step"].pipe(as_list) == [1, 2, 3, 4, 5]
+    assert hs["n"].pipe(as_list) == [4] * 5
     assert set(hs.columns) == {"step", "n", "rmse", "mae"}
 
 
@@ -281,10 +282,7 @@ def test_backtest_recursive_error_exceeds_one_step_error() -> None:
     # 誤差が蓄積するので、真のラグを使う1期先予測より再帰予測の誤差の方が大きい
     assert result.oof_scores["rmse"] > result.onestep_oof_scores["rmse"]
     hs = result.horizon_scores
-    assert (
-        hs.filter(pl.col("step") <= 3)["rmse"].mean()
-        < hs.filter(pl.col("step") >= 20)["rmse"].mean()
-    )
+    assert hs.loc[hs["step"] <= 3, "rmse"].mean() < hs.loc[hs["step"] >= 20, "rmse"].mean()
 
 
 # --- 実験・CLI --------------------------------------------------------------------------
@@ -292,11 +290,12 @@ def test_backtest_recursive_error_exceeds_one_step_error() -> None:
 
 def _write_inputs(tmp_path: Path) -> tuple[Path, Path]:
     full = _panel(n_days=130)
-    train = full.filter(pl.col("date") < dt.date(2024, 4, 30))
-    test = full.filter(pl.col("date") >= dt.date(2024, 4, 30)).drop("y")
+    cutoff = pd.Timestamp(2024, 4, 30)
+    train = full[full["date"] < cutoff]
+    test = full[full["date"] >= cutoff].drop(columns="y")
     train_path, test_path = tmp_path / "train.parquet", tmp_path / "test.parquet"
-    train.write_parquet(train_path)
-    test.write_parquet(test_path)
+    train.to_parquet(train_path, index=False)
+    test.to_parquet(test_path, index=False)
     return train_path, test_path
 
 
@@ -317,9 +316,9 @@ def test_run_experiment_forecast_outputs(tmp_path: Path, test_prediction: str) -
     for name in ("horizon_scores.csv", "horizon_error.png", "test_predictions.parquet"):
         assert (out / name).is_file(), name
     assert (out / "shap" / "shap_beeswarm.png").is_file()
-    test_pred = pl.read_parquet(out / "test_predictions.parquet")
-    assert test_pred.height == 2 * 10  # 2系列 × 10日
-    assert test_pred["pred"].null_count() == 0
+    test_pred = pd.read_parquet(out / "test_predictions.parquet")
+    assert len(test_pred) == 2 * 10  # 2系列 × 10日
+    assert test_pred["pred"].isna().sum() == 0
     logged = mlflow.get_run(result.run_id).data.metrics
     assert "oof_rmse" in logged and "onestep_oof_rmse" in logged
 

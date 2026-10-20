@@ -1,8 +1,7 @@
 """設定から sklearn Pipeline（特徴量エンジニアリング → モデル入力変換 → モデル）を組み立てる。
 
-前処理はpolars DataFrameのまま行い、モデル直前の `ToModelInput` でpandas DataFrameに
-変換する。pandasを使うのは、LightGBM・XGBoost・SHAPが特徴量名をpandasの列名から
-取得するため（モデル境界でのみ使用する）。
+前処理からモデルへの入力まで、pandas DataFrameのまま受け渡す。モデル直前の `ToModelInput` で
+列の型を確認し、学習時の列順に揃える（LightGBM・XGBoost・SHAPは特徴量名を列名から取得する）。
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from typing import Any, Self
 
 import numpy as np
 import pandas as pd
-import polars as pl
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 
@@ -23,7 +21,7 @@ MODEL_STEP = "model"
 
 
 class ToModelInput(BaseEstimator, TransformerMixin):
-    """polars DataFrameをモデル入力用のpandas DataFrameに変換する。
+    """DataFrameをモデル入力用に整える（列の型の確認と、列順の固定）。
 
     数値型（整数・浮動小数・真偽値）以外の列が残っている場合は、どの列を
     エンコードすべきかが分かるよう列名を列挙してエラーにする
@@ -40,16 +38,15 @@ class ToModelInput(BaseEstimator, TransformerMixin):
     def __init__(self, dtype: str | None = None) -> None:
         self.dtype = dtype
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """列名を記録し、数値以外の列が無いことを確認する。
 
         Raises:
             TypeError: 数値型以外の列が含まれる場合。
         """
+        # 真偽値は pandas でも数値型として扱われる
         non_numeric = [
-            name
-            for name, dtype in X.schema.items()
-            if not (dtype.is_numeric() or dtype == pl.Boolean)
+            str(name) for name in X.columns if not pd.api.types.is_numeric_dtype(X[name])
         ]
         if non_numeric:
             raise TypeError(
@@ -59,10 +56,15 @@ class ToModelInput(BaseEstimator, TransformerMixin):
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pd.DataFrame:
-        """fit時の列順でpandas DataFrameに変換する。"""
-        # polarsのnullはpandas側でNaNとして扱われるようfloat変換可能な形で出力する
-        frame = X.select(list(self.feature_names_in_)).to_pandas()
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """fit時の列順に揃えたDataFrameを返す。"""
+        frame = X[list(self.feature_names_in_)]
+        # nullable型（Int64・Float64・boolean）の欠損 pd.NA は、モデルが扱えるようNaNのfloatにする
+        nullable = [
+            c for c in frame.columns if isinstance(frame[c].dtype, pd.api.extensions.ExtensionDtype)
+        ]
+        if nullable:
+            frame = frame.astype(dict.fromkeys(nullable, "float64"))
         if self.dtype is not None:
             frame = frame.astype(self.dtype)  # type: ignore[arg-type]
         return frame
@@ -88,7 +90,7 @@ class DropColumns(BaseEstimator, TransformerMixin):
     def __init__(self, columns: str | list[str]) -> None:
         self.columns = columns
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """削除対象の列が存在することを確認する。
 
         Raises:
@@ -100,9 +102,9 @@ class DropColumns(BaseEstimator, TransformerMixin):
             raise KeyError(f"削除対象の列がありません: {missing}")
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """指定列を削除したDataFrameを返す。"""
-        return X.drop(self.columns_)
+        return X.drop(columns=self.columns_)
 
 
 def import_class(class_path: str) -> type:

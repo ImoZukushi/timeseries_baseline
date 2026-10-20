@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Self
 
 import numpy as np
-import polars as pl
+import pandas as pd
 from sklearn.model_selection import (
     LearningCurveDisplay,
     ValidationCurveDisplay,
@@ -276,7 +276,7 @@ class HorizonErrorDisplay:
     @classmethod
     def from_scores(
         cls,
-        horizon_scores: pl.DataFrame,
+        horizon_scores: pd.DataFrame,
         metric: str,
         *,
         reference: float | None = None,
@@ -284,7 +284,7 @@ class HorizonErrorDisplay:
         title: str = "",
     ) -> Self:
         """ステップ別スコアの表（列 `step` と指標名）から描く。"""
-        valid = horizon_scores.drop_nulls(metric)
+        valid = horizon_scores.dropna(subset=[metric])
         disp = cls(valid["step"].to_numpy(), valid[metric].to_numpy(), metric, reference)
         return disp.plot(ax=ax, title=title)
 

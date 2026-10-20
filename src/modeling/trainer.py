@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 from sklearn.pipeline import Pipeline
 
 from modeling.config import ExperimentConfig
@@ -63,9 +63,9 @@ class CVResult:
 
 def fit_pipeline(
     config: ExperimentConfig,
-    X_train: pl.DataFrame,
+    X_train: pd.DataFrame,
     y_train: np.ndarray,
-    X_valid: pl.DataFrame | None = None,
+    X_valid: pd.DataFrame | None = None,
     y_valid: np.ndarray | None = None,
     params: dict[str, Any] | None = None,
     early_stopping: bool = True,
@@ -111,10 +111,10 @@ def fit_pipeline(
 
 def run_cv(
     config: ExperimentConfig,
-    X: pl.DataFrame,
+    X: pd.DataFrame,
     y: np.ndarray,
     folds: Sequence[Fold],
-    X_test: pl.DataFrame | None = None,
+    X_test: pd.DataFrame | None = None,
     params: dict[str, Any] | None = None,
     n_classes: int | None = None,
     fold_callback: FoldCallback | None = None,
@@ -123,7 +123,7 @@ def run_cv(
 
     Args:
         config: 実験設定。
-        X: 学習データの特徴量（polars DataFrame）。
+        X: 学習データの特徴量。
         y: エンコード済みの目的変数（`modeling.tasks.encode_target` の出力）。
         folds: `(train_idx, valid_idx)` のリスト（`modeling.cv.make_folds` の出力）。
         X_test: テストデータの特徴量（任意）。
@@ -137,7 +137,7 @@ def run_cv(
     task = config.task
     if task is Task.MULTICLASS and n_classes is None:
         n_classes = int(np.max(y)) + 1
-    n = X.height
+    n = len(X)
     oof_shape: tuple[int, ...] = (
         (n,) if n_classes is None or task is not Task.MULTICLASS else (n, n_classes)
     )
@@ -151,7 +151,7 @@ def run_cv(
     use_params = config.model.params if params is None else params
 
     for i, (train_idx, valid_idx) in enumerate(folds):
-        X_tr, X_va = X[train_idx], X[valid_idx]
+        X_tr, X_va = X.iloc[train_idx], X.iloc[valid_idx]
         y_tr, y_va = y[train_idx], y[valid_idx]
         pipeline = fit_pipeline(config, X_tr, y_tr, X_va, y_va, params=use_params)
         pred = predict(pipeline, X_va, task, n_classes)

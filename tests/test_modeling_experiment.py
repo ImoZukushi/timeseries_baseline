@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 import yaml
+from pandas_helpers import as_list
 
 from modeling.config import ExperimentConfig
 from modeling.experiment import prepare_dataset, run_experiment, select_feature_columns
@@ -45,14 +46,14 @@ def test_predictions_frame_round_trip_binary_and_multiclass() -> None:
     pred = np.array([0.1, np.nan, 0.9])
     frame = predictions_to_frame(pred, fold_ids=np.array([0, -1, 1]), target=np.array([0, 1, 1]))
     assert prediction_columns(frame) == ["pred"]
-    assert frame["pred"].null_count() == 1  # NaNはnullとして保存
+    assert frame["pred"].isna().sum() == 1  # NaNはnullとして保存
     back = frame_to_predictions(frame)
     assert np.isnan(back[1]) and back[[0, 2]].tolist() == [0.1, 0.9]
 
     multi = np.array([[0.2, 0.8], [0.6, 0.4]])
-    frame_m = predictions_to_frame(multi, ids=pl.Series(["a", "b"]))
+    frame_m = predictions_to_frame(multi, ids=pd.Series(["a", "b"]))
     assert prediction_columns(frame_m) == ["pred_0", "pred_1"]
-    assert frame_m["id"].to_list() == ["a", "b"]
+    assert frame_m["id"].pipe(as_list) == ["a", "b"]
     assert np.allclose(frame_to_predictions(frame_m), multi)
 
 
@@ -69,7 +70,7 @@ def test_select_feature_columns_default_and_explicit(tmp_path: Path) -> None:
 
 
 def test_prepare_dataset_missing_column_raises(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     raw = _raw_config(tmp_path / "t.csv")
     raw["data"]["target"] = "no_such"  # type: ignore[index]
@@ -77,26 +78,26 @@ def test_prepare_dataset_missing_column_raises(
         prepare_dataset(ExperimentConfig.model_validate(raw), synthetic_frame)
 
 
-def test_run_experiment_saves_outputs(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_experiment_saves_outputs(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     cfg = ExperimentConfig.model_validate(_raw_config(tmp_path / "t.csv"))
     ds = prepare_dataset(cfg, synthetic_frame, synthetic_frame.head(4))
     result = run_experiment(cfg, ds, output_root=tmp_path / "out")
     out = result.output_dir
     assert out.parent == tmp_path / "out" / "exp_test"
-    oof = pl.read_parquet(out / OOF_FILENAME)
-    assert oof.columns == ["row", "id", "fold", "target", "pred"]
-    assert oof.height == synthetic_frame.height
-    test = pl.read_parquet(out / TEST_FILENAME)
-    assert test.height == 4
-    scores = pl.read_csv(out / "cv_scores.csv")
-    assert scores["fold"].to_list() == ["0", "1", "2", "oof"]
+    oof = pd.read_parquet(out / OOF_FILENAME)
+    assert list(oof.columns) == ["row", "id", "fold", "target", "pred"]
+    assert len(oof) == len(synthetic_frame)
+    test = pd.read_parquet(out / TEST_FILENAME)
+    assert len(test) == 4
+    scores = pd.read_csv(out / "cv_scores.csv")
+    assert scores["fold"].pipe(as_list) == ["0", "1", "2", "oof"]
     saved = yaml.safe_load((out / "config.yaml").read_text(encoding="utf-8"))
     assert saved["name"] == "exp_test"
     assert saved["resolved_params"] == {"n_estimators": 20}
     assert result.run_id is None
 
 
-def test_run_experiment_logs_to_mlflow(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_experiment_logs_to_mlflow(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     import mlflow
 
     uri = f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}"
@@ -124,12 +125,12 @@ def test_flatten_dict() -> None:
 
 
 def test_run_experiment_script_end_to_end(
-    synthetic_frame: pl.DataFrame, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    synthetic_frame: pd.DataFrame, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import run_experiment as script
 
     train_path = tmp_path / "train.parquet"
-    synthetic_frame.write_parquet(train_path)
+    synthetic_frame.to_parquet(train_path, index=False)
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     for model in ("dummy", "lightgbm"):

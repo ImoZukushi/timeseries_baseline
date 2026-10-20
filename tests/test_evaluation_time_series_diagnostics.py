@@ -79,7 +79,7 @@ def test_unit_root_conclusions() -> None:
     ids=["short", "constant", "all_nan"],
 )
 def test_tests_return_nan_when_not_computable(values: np.ndarray) -> None:
-    assert ljung_box_test(values).height == 0
+    assert len(ljung_box_test(values)) == 0
     assert np.isnan(jarque_bera_test(values)["p_value"])
     assert unit_root_test(values)["conclusion"] == NOT_COMPUTED
 
@@ -87,7 +87,7 @@ def test_tests_return_nan_when_not_computable(values: np.ndarray) -> None:
 def test_tests_ignore_missing_values() -> None:
     values = _white_noise()
     values[::10] = np.nan
-    assert ljung_box_test(values).height == 1
+    assert len(ljung_box_test(values)) == 1
     assert np.isfinite(jarque_bera_test(values)["p_value"])
 
 
@@ -96,13 +96,13 @@ def test_residual_tests_one_row_per_series() -> None:
         {"wn": _white_noise(), "ar": _ar1(), "short": np.arange(3.0)}, seasonal_period=30
     )
     assert summary["series"].to_list() == ["wn", "ar", "short"]
-    rows = {r["series"]: r for r in summary.iter_rows(named=True)}
+    rows = {r["series"]: r for r in summary.to_dict("records")}
     assert rows["wn"]["autocorrelation"] == "なし"
     assert rows["ar"]["autocorrelation"] == "あり"
     assert rows["short"]["autocorrelation"] == NOT_COMPUTED
     # 要約表には最大のラグの結果を載せ、Ljung-Box表には全ラグを載せる
     assert rows["wn"]["ljung_box_lag"] == 30
-    assert lb.filter(lb["series"] == "wn")["lag"].to_list() == [10, 30]
+    assert lb.loc[lb["series"] == "wn", "lag"].to_list() == [10, 30]
     assert "short" not in lb["series"].to_list()
 
 
@@ -137,7 +137,7 @@ def test_timeseries_display_multiple_series_and_time_gaps() -> None:
 def test_diagnostics_display_layout() -> None:
     disp = TimeSeriesResidualDiagnosticsDisplay.from_residuals(_ar1(), seasonal_period=30)
     assert set(disp.ax_) == {"line", "hist", "qq", "acf", "pacf", "table"}
-    assert disp.tests.height == 1
+    assert len(disp.tests) == 1
     assert disp.tests["autocorrelation"][0] == "あり"
     assert disp.ljung_box["lag"].to_list() == [10, 30]
     assert disp.ax_["table"].tables

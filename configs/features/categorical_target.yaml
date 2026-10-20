@@ -5,5 +5,5 @@ description: 列車番号の低頻度をまとめてからターゲットエン�
 steps:
   - class: feature_engineering.categorical.RareLabelGrouper
     params: {variables: [列車番号], min_frequency: 20}
-  - class: feature_engineering.categorical.PolarsTargetEncoder
+  - class: feature_engineering.categorical.PandasTargetEncoder
     params: {variables: [列車番号, 停車駅名]}

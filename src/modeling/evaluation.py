@@ -24,7 +24,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 from sklearn.metrics import make_scorer
 
 from evaluation.classification import (
@@ -131,9 +131,9 @@ class _Saver:
         plt.close(fig)
         self.paths.append(path)
 
-    def table(self, frame: pl.DataFrame, filename: str) -> None:
+    def table(self, frame: pd.DataFrame, filename: str) -> None:
         path = self.directory / filename
-        frame.write_csv(path)
+        frame.to_csv(path, index=False)
         self.paths.append(path)
 
 
@@ -167,7 +167,7 @@ def _save_regression(
             {"series": name, **residual_summary(dataset.y[r], cv_result.oof_pred[r])}
             for name, r in series_rows.items()
         ]
-    saver.table(pl.DataFrame(summary_rows), "residual_summary.csv")
+    saver.table(pd.DataFrame(summary_rows), "residual_summary.csv")
 
     if series_rows is None:
         saver.figure(
@@ -202,7 +202,7 @@ def _save_regression(
         )
         top = display.top(20)
         if dataset.ids is not None:
-            top = top.with_columns(dataset.ids.gather(top["row"].to_numpy()).alias("id"))
+            top = top.assign(id=dataset.ids.iloc[top["row"].to_numpy()].to_numpy())
         saver.table(top, "top_cooks_distance.csv")
 
     if config.data.time_col is not None:
@@ -283,8 +283,8 @@ def _save_time_series_diagnostics(
             regression=ev.unit_root_regression,
             alpha=ev.test_alpha,
         )
-        test_frames.append(summary.insert_column(0, pl.lit(residual_type).alias("residual_type")))
-        lb_frames.append(lb.insert_column(0, pl.lit(residual_type).alias("residual_type")))
+        test_frames.append(_with_label(summary, residual_type))
+        lb_frames.append(_with_label(lb, residual_type))
 
         shown = list(series_rows.items())[: ev.max_series]
         note = f"{label}（OOF）"
@@ -317,19 +317,27 @@ def _save_time_series_diagnostics(
                 f"{label}（OOF）。foldをつないだ時刻順の残差で検定",
             )
     if test_frames:
-        saver.table(pl.concat(test_frames, how="diagonal_relaxed"), "residual_tests.csv")
-        saver.table(pl.concat(lb_frames, how="diagonal_relaxed"), "ljung_box.csv")
+        # 列が揃わない表も、列の和集合で縦に連結する（無い列は欠損）
+        saver.table(pd.concat(test_frames, ignore_index=True), "residual_tests.csv")
+        saver.table(pd.concat(lb_frames, ignore_index=True), "ljung_box.csv")
+
+
+def _with_label(frame: pd.DataFrame, residual_type: str) -> pd.DataFrame:
+    """先頭に残差の種類の列（`residual_type`）を加えた表を返す。"""
+    out = frame.copy()
+    out.insert(0, "residual_type", residual_type)
+    return out
 
 
 def _oof_influence(
     dataset: Dataset, cv_result: CVResult, rows: np.ndarray
-) -> tuple[pl.DataFrame | None, int]:
+) -> tuple[pd.DataFrame | None, int]:
     """foldごとに、各foldのモデルの入力（前処理後の検証データ）で Leverage と Cookの距離を求める。
 
     前処理（ワンホットのカテゴリなど）はfoldごとに学習されるため、列がfoldで揃うとは限らない。
     そのためfoldごとに計算して連結する（OOF予測と同じ考え方）。
     """
-    predicted = np.zeros(dataset.X.height, dtype=bool)
+    predicted = np.zeros(len(dataset.X), dtype=bool)
     predicted[rows] = True
     frames, ranks = [], []
     rng = np.random.default_rng(0)
@@ -339,7 +347,7 @@ def _oof_influence(
             continue
         if fold_rows.size > _MAX_INFLUENCE_ROWS:
             fold_rows = np.sort(rng.choice(fold_rows, _MAX_INFLUENCE_ROWS, replace=False))
-        model_input = cv_result.models[fold][:-1].transform(dataset.X[fold_rows])
+        model_input = cv_result.models[fold][:-1].transform(dataset.X.iloc[fold_rows])
         X = np.asarray(model_input, dtype=np.float64)
         residuals = dataset.y[fold_rows] - cv_result.oof_pred[fold_rows]
         try:
@@ -348,10 +356,10 @@ def _oof_influence(
             # 行数が特徴量数以下のfoldは計算できないため飛ばす
             continue
         ranks.append(float(inf["leverage"].sum()))
-        frames.append(inf.with_columns(pl.Series("row", fold_rows), pl.lit(fold).alias("fold")))
+        frames.append(inf.assign(row=fold_rows, fold=fold))
     if not frames:
         return None, 0
-    return pl.concat(frames), int(round(float(np.mean(ranks))))
+    return pd.concat(frames, ignore_index=True), int(round(float(np.mean(ranks))))
 
 
 def _series_rows(
@@ -473,10 +481,10 @@ def _curve_inputs(
     return estimator, dataset.X, y, folds, scorer, not metric.greater_is_better, "".join(notes)
 
 
-def _curve_table(result: Any, x_name: str) -> pl.DataFrame:
+def _curve_table(result: Any, x_name: str) -> pd.DataFrame:
     """学習曲線・検証曲線の計算結果を表にする（スコアは元の向きに戻す）。"""
     sign = -1.0 if result.negate else 1.0
-    return pl.DataFrame(
+    return pd.DataFrame(
         {
             x_name: [str(v) for v in result.x],
             "train_mean": sign * result.train_scores.mean(axis=1),

@@ -9,7 +9,7 @@ data:
   group_col: 年月日  # 同じ日のデータがtrain/validに跨らないようにする
   drop_cols: [年月日, 発車時刻, フェンダー部分(東京方向), 台車部分, フェンダー部分(金沢方向)]
 features:
-  - class: feature_engineering.categorical.PolarsOrdinalEncoder
+  - class: feature_engineering.categorical.PandasOrdinalEncoder
     params: {variables: [列車番号, 停車駅名]}
 cv: {method: group, n_splits: 5, seed: 42}
 model: {name: dummy}

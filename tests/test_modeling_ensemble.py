@@ -6,9 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 import yaml
+from pandas_helpers import as_list
 from pydantic import ValidationError
 
 from modeling.config import EnsembleConfig, ExperimentConfig
@@ -64,7 +65,7 @@ def _ens_config(task: str, method: str, **overrides: Any) -> EnsembleConfig:
     return EnsembleConfig.model_validate(raw | overrides)
 
 
-def _run_members(frame: pl.DataFrame, task: str, root: Path) -> None:
+def _run_members(frame: pd.DataFrame, task: str, root: Path) -> None:
     for model in ("lightgbm", "linear"):
         cfg = _exp_config(task, model)
         run_experiment(cfg, prepare_dataset(cfg, frame, frame.head(6)), output_root=root)
@@ -148,7 +149,7 @@ def test_latest_run_dir_picks_newest(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("method", ["mean", "weighted", "stacking"])
 def test_run_ensemble_regression(
-    synthetic_frame: pl.DataFrame, tmp_path: Path, method: str
+    synthetic_frame: pd.DataFrame, tmp_path: Path, method: str
 ) -> None:
     _run_members(synthetic_frame, "regression", tmp_path / "exp")
     result = run_ensemble(
@@ -157,10 +158,10 @@ def test_run_ensemble_regression(
         experiments_root=tmp_path / "exp",
     )
     scores = result.scores
-    assert scores["model"].to_list() == ["lgbm", "linear", f"ensemble_{method}"]
-    member_rmse = scores["rmse"].to_list()[:2]
+    assert scores["model"].pipe(as_list) == ["lgbm", "linear", f"ensemble_{method}"]
+    member_rmse = scores["rmse"].pipe(as_list)[:2]
     # アンサンブルは少なくとも悪い方の構成要素よりは良い
-    assert scores["rmse"].to_list()[2] <= max(member_rmse)
+    assert scores["rmse"].pipe(as_list)[2] <= max(member_rmse)
     assert result.test_pred is not None and result.test_pred.shape == (6,)
     out = result.output_dir
     assert {p.name for p in out.iterdir()} >= {
@@ -169,7 +170,7 @@ def test_run_ensemble_regression(
         OOF_FILENAME,
         TEST_FILENAME,
     }
-    assert pl.read_parquet(out / TEST_FILENAME)["id"].to_list() == list(range(6))
+    assert pd.read_parquet(out / TEST_FILENAME)["id"].pipe(as_list) == list(range(6))
     if method in ("mean", "weighted"):
         assert result.weights is not None
         assert sum(result.weights.values()) == pytest.approx(1.0)
@@ -177,7 +178,7 @@ def test_run_ensemble_regression(
         assert result.weights is None
 
 
-def test_run_ensemble_binary_rank_mean(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_ensemble_binary_rank_mean(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     _run_members(synthetic_frame, "binary", tmp_path / "exp")
     result = run_ensemble(
         _ens_config("binary", "rank_mean"),
@@ -186,21 +187,21 @@ def test_run_ensemble_binary_rank_mean(synthetic_frame: pl.DataFrame, tmp_path: 
     )
     assert result.test_pred is not None
     assert result.test_pred.min() >= 0.0 and result.test_pred.max() <= 1.0
-    assert 0.5 < result.scores["auc"].to_list()[-1] <= 1.0
+    assert 0.5 < result.scores["auc"].pipe(as_list)[-1] <= 1.0
 
 
-def test_run_ensemble_multiclass_stacking(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_ensemble_multiclass_stacking(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     _run_members(synthetic_frame, "multiclass", tmp_path / "exp")
     result = run_ensemble(
         _ens_config("multiclass", "stacking"),
         output_root=tmp_path / "ens",
         experiments_root=tmp_path / "exp",
     )
-    assert result.oof_pred.shape == (synthetic_frame.height, 3)
-    assert result.oof_pred.sum(axis=1) == pytest.approx(np.ones(synthetic_frame.height))
+    assert result.oof_pred.shape == (len(synthetic_frame), 3)
+    assert result.oof_pred.sum(axis=1) == pytest.approx(np.ones(len(synthetic_frame)))
 
 
-def test_load_member_from_mlflow_run(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_load_member_from_mlflow_run(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     uri = f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}"
     tracker = MLflowTracker("ens_src", tracking_uri=uri, artifact_root=tmp_path / "artifacts")
     cfg = _exp_config("regression", "linear")
@@ -222,7 +223,7 @@ def test_load_member_from_mlflow_run(synthetic_frame: pl.DataFrame, tmp_path: Pa
     assert member.test is None  # テストデータ無しの実験
 
 
-def test_run_ensemble_script(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_ensemble_script(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     import run_ensemble as script
 
     _run_members(synthetic_frame, "regression", tmp_path / "exp")

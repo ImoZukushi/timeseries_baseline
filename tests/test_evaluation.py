@@ -6,9 +6,10 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 import statsmodels.api as sm
+from pandas_helpers import as_list
 from sklearn import metrics as skm
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.metrics import make_scorer, mean_absolute_error
@@ -97,7 +98,7 @@ def test_residual_correlogram_matches_eda_acf_and_handles_groups() -> None:
     for t in range(1, 300):
         e[t] = 0.7 * e[t - 1] + rng.normal()  # AR(1) の残差
     disp = ResidualCorrelogramDisplay.from_residuals({"A": e, "B": rng.normal(size=300)}, nlags=10)
-    expected = compute_acf(pl.Series(e), nlags=10)
+    expected = compute_acf(pd.Series(e), nlags=10)
     assert expected is not None and disp.acf["A"] == pytest.approx(expected)
     assert disp.acf["A"][1] > 0.5 > abs(disp.acf["B"][1])
     assert np.asarray(disp.ax_).shape == (2, 2)
@@ -124,7 +125,7 @@ def test_influence_matches_statsmodels_for_ols() -> None:
     )
     # Leverage の合計 = 特徴量数 + 切片
     assert result["leverage"].sum() == pytest.approx(4.0)
-    assert int(result.sort("leverage", descending=True)["row"][0]) == 5
+    assert int(result.sort_values("leverage", ascending=False)["row"].iloc[0]) == 5
 
 
 def test_influence_handles_collinearity_and_missing_values() -> None:
@@ -135,7 +136,7 @@ def test_influence_handles_collinearity_and_missing_values() -> None:
     result = compute_influence(X, rng.normal(size=50))
     # 線形従属な列はランクに数えない（切片 + 2列）
     assert result["leverage"].sum() == pytest.approx(3.0)
-    assert result["cooks_distance"].null_count() == 0
+    assert result["cooks_distance"].isna().sum() == 0
     with pytest.raises(ValueError, match="ランク"):
         compute_influence(rng.normal(size=(3, 5)), rng.normal(size=3))
 
@@ -148,7 +149,7 @@ def test_influence_display_top_and_original_rows() -> None:
     p[10] = np.nan  # 予測が欠損の行は除かれるが、行番号は元のまま
     y[20] += 10  # 大きく外れた行
     disp = InfluenceDisplay.from_predictions(X, y, p)
-    assert 10 not in disp.influence["row"].to_list()
+    assert 10 not in disp.influence["row"].pipe(as_list)
     assert int(disp.top(1)["row"][0]) == 20
     assert np.asarray(disp.ax_).size == 2
 
@@ -254,7 +255,7 @@ def test_training_history_and_horizon_displays() -> None:
     disp = TrainingHistoryDisplay.from_histories([history, TrainingHistory("l2", [1.0], None)])
     # fold 0: 検証・学習・最良反復の縦線、fold 1: 学習のみ → 4本
     assert len(disp.ax_.lines) == 4
-    scores = pl.DataFrame({"step": [1, 2, 3], "mae": [1.0, 1.5, None]})
+    scores = pd.DataFrame({"step": [1, 2, 3], "mae": [1.0, 1.5, None]})
     horizon = HorizonErrorDisplay.from_scores(scores, "mae", reference=0.8)
     assert horizon.steps.tolist() == [1, 2]  # 欠損のステップは除く
     assert horizon.reference == 0.8

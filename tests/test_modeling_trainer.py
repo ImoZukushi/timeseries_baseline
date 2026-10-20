@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any, ClassVar, Self
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
+from pandas_helpers import as_list
 from sklearn.base import BaseEstimator, TransformerMixin
 
 from modeling.config import ExperimentConfig
@@ -38,7 +39,7 @@ def _config(
         },
         "features": [
             {
-                "class": "feature_engineering.categorical.PolarsOneHotEncoder",
+                "class": "feature_engineering.categorical.PandasOneHotEncoder",
                 "params": {"variables": ["cat"]},
             },
             {"class": "modeling.pipeline.DropColumns", "params": {"columns": ["cat"]}},
@@ -59,22 +60,22 @@ def _small_params(model: str) -> dict[str, Any]:
 
 
 def test_to_model_input_rejects_non_numeric_columns() -> None:
-    frame = pl.DataFrame({"a": [1.0, 2.0], "s": ["x", "y"]})
+    frame = pd.DataFrame({"a": [1.0, 2.0], "s": ["x", "y"]})
     with pytest.raises(TypeError, match="s"):
         ToModelInput().fit(frame)
 
 
 def test_to_model_input_keeps_fit_column_order_and_dtype() -> None:
-    train = pl.DataFrame({"a": [1, 2], "b": [0.5, None]})
+    train = pd.DataFrame({"a": [1, 2], "b": [0.5, None]})
     t = ToModelInput(dtype="float32").fit(train)
-    out = t.transform(train.select("b", "a"))
+    out = t.transform(train[["b", "a"]])
     assert list(out.columns) == ["a", "b"]
     assert str(out.dtypes["a"]) == "float32"
     assert np.isnan(out["b"].iloc[1])
 
 
 def test_drop_columns() -> None:
-    frame = pl.DataFrame({"a": [1], "b": [2]})
+    frame = pd.DataFrame({"a": [1], "b": [2]})
     assert DropColumns("a").fit_transform(frame).columns == ["b"]
     with pytest.raises(KeyError):
         DropColumns(["zzz"]).fit(frame)
@@ -91,7 +92,7 @@ def test_import_class_errors() -> None:
 def test_build_pipeline_structure() -> None:
     pipeline = build_pipeline(_config())
     assert [name for name, _ in pipeline.steps][-2:] == ["to_model_input", "model"]
-    assert pipeline.steps[0][0] == "00_PolarsOneHotEncoder"
+    assert pipeline.steps[0][0] == "00_PandasOneHotEncoder"
 
 
 def test_model_registry_contains_builtin_models() -> None:
@@ -106,12 +107,12 @@ def test_model_registry_contains_builtin_models() -> None:
 @pytest.mark.parametrize("model", ["dummy", "linear", "lightgbm", "xgboost"])
 @pytest.mark.parametrize("task", ["regression", "binary", "multiclass"])
 def test_run_cv_all_models_share_same_interface(
-    synthetic_frame: pl.DataFrame, model: str, task: str
+    synthetic_frame: pd.DataFrame, model: str, task: str
 ) -> None:
     cfg = _config(task, model)
     ds = prepare_dataset(cfg, synthetic_frame, synthetic_frame.head(7))
     result = run_cv(cfg, ds.X, ds.y, ds.folds, X_test=ds.X_test, n_classes=ds.n_classes)
-    n = synthetic_frame.height
+    n = len(synthetic_frame)
     expected_shape = (n, 3) if task == "multiclass" else (n,)
     assert result.oof_pred.shape == expected_shape
     # KFoldでは全行がちょうど1回ずつ予測される
@@ -123,7 +124,7 @@ def test_run_cv_all_models_share_same_interface(
     assert all(len(v) == 3 for v in result.fold_scores.values())
 
 
-def test_run_cv_learns_signal(synthetic_frame: pl.DataFrame) -> None:
+def test_run_cv_learns_signal(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("regression", "linear")
     ds = prepare_dataset(cfg, synthetic_frame)
     model = run_cv(cfg, ds.X, ds.y, ds.folds)
@@ -137,17 +138,17 @@ class RecordingTransformer(BaseEstimator, TransformerMixin):
 
     seen_in_fit: ClassVar[list[set[int]]] = []
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
-        RecordingTransformer.seen_in_fit.append(set(X["a_id"].to_list()))
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
+        RecordingTransformer.seen_in_fit.append(set(X["a_id"].pipe(as_list)))
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         return X
 
 
-def test_run_cv_fits_preprocessing_on_train_fold_only(synthetic_frame: pl.DataFrame) -> None:
+def test_run_cv_fits_preprocessing_on_train_fold_only(synthetic_frame: pd.DataFrame) -> None:
     RecordingTransformer.seen_in_fit.clear()
-    frame = synthetic_frame.with_columns(a_id=pl.col("id"))
+    frame = synthetic_frame.assign(a_id=synthetic_frame["id"])
     cfg = _config(
         "regression",
         "linear",
@@ -168,7 +169,7 @@ def test_run_cv_fits_preprocessing_on_train_fold_only(synthetic_frame: pl.DataFr
 
 
 @pytest.mark.parametrize("model", ["lightgbm", "xgboost"])
-def test_early_stopping_records_best_iteration(synthetic_frame: pl.DataFrame, model: str) -> None:
+def test_early_stopping_records_best_iteration(synthetic_frame: pd.DataFrame, model: str) -> None:
     cfg = _config(
         "regression",
         model,
@@ -180,7 +181,7 @@ def test_early_stopping_records_best_iteration(synthetic_frame: pl.DataFrame, mo
 
 
 def test_refit_full_trains_additional_model_with_mean_iterations(
-    synthetic_frame: pl.DataFrame,
+    synthetic_frame: pd.DataFrame,
 ) -> None:
     cfg = _config(
         "regression",
@@ -196,14 +197,14 @@ def test_refit_full_trains_additional_model_with_mean_iterations(
     assert result.test_pred is not None and result.test_pred.shape == (5,)
 
 
-def test_time_series_cv_leaves_initial_rows_unpredicted(synthetic_frame: pl.DataFrame) -> None:
+def test_time_series_cv_leaves_initial_rows_unpredicted(synthetic_frame: pd.DataFrame) -> None:
     raw = _config("regression", "linear").model_dump(mode="json", by_alias=True)
     raw.update(task="time_series", cv={"method": "time_series"})
     raw["data"]["time_col"] = "ts"
     cfg = ExperimentConfig.model_validate(raw)
     # 時刻の降順に並べたデータを渡しても、prepare_datasetで時刻順にソートされる
-    ds = prepare_dataset(cfg, synthetic_frame.reverse())
-    assert ds.X.height == synthetic_frame.height
+    ds = prepare_dataset(cfg, synthetic_frame.iloc[::-1])
+    assert len(ds.X) == len(synthetic_frame)
     result = run_cv(cfg, ds.X, ds.y, ds.folds)
     first_valid = ds.folds[0][1].min()
     assert np.isnan(result.oof_pred[:first_valid]).all()

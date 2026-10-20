@@ -14,7 +14,7 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 from sklearn.model_selection import (
     BaseCrossValidator,
     GroupKFold,
@@ -70,13 +70,13 @@ class TimeCutoffSplit(BaseCrossValidator):
         end = _parse_time(self.valid_end) if self.valid_end is not None else None
         uppers: list[dt.datetime | None] = [*bounds[1:], end]
         for lower, upper in zip(bounds, uppers, strict=True):
-            train_mask = (times < lower).fill_null(False)
+            # 欠損（NaT）との比較はFalseになるため、時刻の無い行はどちらにも入らない
+            train_mask = times < lower
             valid_mask = times >= lower
             if upper is not None:
                 valid_mask = valid_mask & (times < upper)
-            valid_mask = valid_mask.fill_null(False)
-            train_idx = np.flatnonzero(train_mask.to_numpy())
-            valid_idx = np.flatnonzero(valid_mask.to_numpy())
+            train_idx = np.flatnonzero(train_mask)
+            valid_idx = np.flatnonzero(valid_mask)
             if len(train_idx) == 0 or len(valid_idx) == 0:
                 raise ValueError(f"カットオフ {lower} で学習または検証期間が空になります")
             yield train_idx, valid_idx
@@ -95,14 +95,12 @@ def _parse_time(value: str | dt.datetime | dt.date) -> dt.datetime:
     return dt.datetime.fromisoformat(value)
 
 
-def _as_datetime_series(values: Any) -> pl.Series:
-    """時刻列をpolarsのDatetime Seriesに変換する（文字列・Date型も受け付ける）。"""
-    series = values if isinstance(values, pl.Series) else pl.Series(values)
-    if series.dtype == pl.String:
-        return series.str.to_datetime()
-    if series.dtype == pl.Date:
-        return series.cast(pl.Datetime)
-    return series
+def _as_datetime_series(values: Any) -> np.ndarray:
+    """時刻列を `datetime64` の配列に変換する（文字列・date型も受け付ける）。"""
+    series = pd.Series(values)
+    if not pd.api.types.is_datetime64_any_dtype(series):
+        series = pd.to_datetime(series)
+    return series.to_numpy()
 
 
 def make_cv(cfg: CVConfig, time_column: str | None = None) -> BaseCrossValidator | Any:
@@ -144,7 +142,7 @@ def make_cv(cfg: CVConfig, time_column: str | None = None) -> BaseCrossValidator
 
 def make_folds(
     cfg: CVConfig,
-    frame: pl.DataFrame,
+    frame: pd.DataFrame,
     y: np.ndarray,
     groups: np.ndarray | None = None,
     time_column: str | None = None,

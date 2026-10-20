@@ -22,7 +22,7 @@ from typing import Any, Self
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 import shap
 from scipy import stats
 
@@ -62,7 +62,7 @@ def _direction(r: float, threshold: float = 0.05) -> str:
 
 def shap_feature_correlation(
     shap_values: Any, data: Any, feature_names: Sequence[str]
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """特徴量ごとに、平均|SHAP|と「特徴量の値と SHAP 値の相関」をまとめた表を返す。
 
     Args:
@@ -89,13 +89,13 @@ def shap_feature_correlation(
             }
         )
     return (
-        pl.DataFrame(rows)
-        .with_columns(pl.selectors.float().fill_nan(None))
-        .sort("mean_abs_shap", descending=True)
+        pd.DataFrame(rows)
+        .sort_values("mean_abs_shap", ascending=False, kind="stable")
+        .reset_index(drop=True)
     )
 
 
-def shap_value_correlation(shap_values: Any, feature_names: Sequence[str]) -> pl.DataFrame:
+def shap_value_correlation(shap_values: Any, feature_names: Sequence[str]) -> pd.DataFrame:
     """特徴量同士の SHAP 値の相関行列（Pearson）を返す。
 
     Returns:
@@ -112,10 +112,9 @@ def shap_value_correlation(shap_values: Any, feature_names: Sequence[str]) -> pl
                 else _pair_correlation(values[:, i], values[:, j])[0]
             )
             matrix[i, j] = matrix[j, i] = r
-    frame = pl.DataFrame({str(name): matrix[:, j] for j, name in enumerate(feature_names)})
-    return frame.insert_column(
-        0, pl.Series("feature", [str(n) for n in feature_names])
-    ).with_columns(pl.selectors.float().fill_nan(None))
+    frame = pd.DataFrame({str(name): matrix[:, j] for j, name in enumerate(feature_names)})
+    frame.insert(0, "feature", [str(n) for n in feature_names])
+    return frame
 
 
 def _top_indices(shap_values: np.ndarray, k: int) -> np.ndarray:
@@ -136,7 +135,7 @@ class ShapCorrelationBarDisplay:
         ax_: 描画したAxes。
     """
 
-    def __init__(self, table: pl.DataFrame) -> None:
+    def __init__(self, table: pd.DataFrame) -> None:
         self.table = table
 
     @classmethod
@@ -157,14 +156,15 @@ class ShapCorrelationBarDisplay:
     def plot(self, ax: Any = None, *, max_display: int = 20, title: str = "") -> Self:
         """色分けした重要度の棒グラフを描く。"""
         ensure_japanese_font()
-        top = self.table.head(max_display).reverse()
-        fig, ax = new_axes(ax, figsize=(9, max(3, 0.38 * top.height + 1.5)))
+        # 横棒グラフは下から描くため、重要度の高い順を逆にする
+        top = self.table.head(max_display).iloc[::-1]
+        fig, ax = new_axes(ax, figsize=(9, max(3, 0.38 * len(top) + 1.5)))
         colors = [
-            {"正": _POSITIVE, "負": _NEGATIVE}.get(d, _UNKNOWN) for d in top["direction"].to_list()
+            {"正": _POSITIVE, "負": _NEGATIVE}.get(d, _UNKNOWN) for d in top["direction"].tolist()
         ]
-        bars = ax.barh(top["feature"].to_list(), top["mean_abs_shap"].to_list(), color=colors)
-        for bar, r in zip(bars, top["spearman"].to_list(), strict=True):
-            label = "相関なし" if r is None else f"r={r:+.2f}"
+        bars = ax.barh(top["feature"].tolist(), top["mean_abs_shap"].tolist(), color=colors)
+        for bar, r in zip(bars, top["spearman"].tolist(), strict=True):
+            label = "相関なし" if pd.isna(r) else f"r={r:+.2f}"
             ax.text(
                 bar.get_width(),
                 bar.get_y() + bar.get_height() / 2,
@@ -289,7 +289,7 @@ class ShapValueCorrelationDisplay:
         ax_: 描画したAxes。
     """
 
-    def __init__(self, matrix: pl.DataFrame) -> None:
+    def __init__(self, matrix: pd.DataFrame) -> None:
         self.matrix = matrix
 
     @classmethod
@@ -311,10 +311,10 @@ class ShapValueCorrelationDisplay:
     def plot(self, ax: Any = None, *, title: str = "") -> Self:
         """ヒートマップを描く。"""
         ensure_japanese_font()
-        names = self.matrix["feature"].to_list()
+        names = self.matrix["feature"].tolist()
         k = len(names)
         fig, ax = new_axes(ax, figsize=(max(6, 0.6 * k + 3), max(5, 0.55 * k + 2)))
-        values = self.matrix.select(names).to_numpy().astype(np.float64)
+        values = self.matrix[names].to_numpy(dtype=np.float64, na_value=np.nan)
         image = ax.imshow(np.ma.masked_invalid(values), cmap="RdBu_r", vmin=-1, vmax=1)
         fig.colorbar(image, ax=ax, label="SHAP値の相関係数")
         ax.set_xticks(range(k), names, rotation=60, ha="right", fontsize=8)

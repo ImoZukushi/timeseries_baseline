@@ -28,7 +28,7 @@ import matplotlib
 # SHAP等の図をファイル保存のみ行うため非対話型バックエンドに固定する
 matplotlib.use("Agg")
 
-import polars as pl  # noqa: E402
+import pandas as pd  # noqa: E402
 
 from modeling.config import ExperimentConfig, load_pipeline_config  # noqa: E402
 from modeling.tracking import MLflowTracker, NullTracker, Tracker  # noqa: E402
@@ -98,8 +98,8 @@ def main(argv: list[str] | None = None) -> None:
         skip_tuning=args.skip_tuning,
         log=print,
     )
-    with pl.Config(tbl_rows=50, tbl_cols=20, tbl_width_chars=200):
-        print(result.summary.sort("rank"))
+    with pd.option_context("display.max_rows", 50, "display.max_columns", 20, "display.width", 200):
+        print(result.summary.sort_values("rank", kind="stable").to_string(index=False))
     print(f"出力: {result.output_dir}")
     print(f"経過時間: {time.perf_counter() - start:.1f}秒")
 

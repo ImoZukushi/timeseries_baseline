@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import optuna
-import polars as pl
+import pandas as pd
 import pytest
 import yaml
 
@@ -35,7 +35,7 @@ def _config(model: str = "lightgbm", **tuning: Any) -> ExperimentConfig:
 
 
 @pytest.fixture
-def dataset(synthetic_frame: pl.DataFrame) -> Dataset:
+def dataset(synthetic_frame: pd.DataFrame) -> Dataset:
     return prepare_dataset(_config(), synthetic_frame)
 
 
@@ -70,7 +70,7 @@ def test_suggest_params_overrides_base_params() -> None:
 def test_tune_default_search_space_returns_complete_best_params(dataset: Dataset) -> None:
     result = tune(_config(), dataset, n_trials=3)
     assert result.n_trials == 3
-    assert result.trials.height == 3
+    assert len(result.trials) == 3
     # 既定探索空間の固定値（subsample_freq）と設定のn_estimatorsも含まれる
     assert result.best_params["n_estimators"] == 20
     assert result.best_params["subsample_freq"] == 1
@@ -135,7 +135,7 @@ def test_study_name_changes_with_training_data_content(tmp_path: Path) -> None:
     assert study_name(ExperimentConfig.model_validate(raw)) != before
 
 
-def test_tune_direction_follows_metric(synthetic_frame: pl.DataFrame) -> None:
+def test_tune_direction_follows_metric(synthetic_frame: pd.DataFrame) -> None:
     cfg = ExperimentConfig.model_validate(
         {
             "name": "tune_auc",
@@ -188,11 +188,11 @@ def test_run_experiment_with_tuning_logs_child_runs(dataset: Dataset, tmp_path: 
     assert run.data.tags["optuna_study"] == result.tuning_result.study_name
 
 
-def test_run_experiment_script_with_tune(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_experiment_script_with_tune(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     import run_experiment as script
 
     train_path = tmp_path / "train.parquet"
-    synthetic_frame.write_parquet(train_path)
+    synthetic_frame.to_parquet(train_path, index=False)
     raw = _config().model_dump(mode="json", by_alias=True)
     raw["data"]["train_path"] = str(train_path)
     config_path = tmp_path / "exp.yaml"
@@ -211,5 +211,5 @@ def test_run_experiment_script_with_tune(synthetic_frame: pl.DataFrame, tmp_path
             str(tmp_path / "out"),
         ]
     )
-    trials = pl.read_csv(next((tmp_path / "out").rglob("tuning_trials.csv")))
-    assert trials.height == 2
+    trials = pd.read_csv(next((tmp_path / "out").rglob("tuning_trials.csv")))
+    assert len(trials) == 2

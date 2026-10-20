@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 
 from modeling.config import ExperimentConfig
 from modeling.cv import Fold
@@ -36,15 +36,15 @@ class Dataset:
         target_transform: fit済みの目的変数の変換（`forecast.target_transform` 指定時のみ）。
     """
 
-    X: pl.DataFrame
+    X: pd.DataFrame
     y: np.ndarray
     classes: np.ndarray | None
     folds: list[Fold]
-    ids: pl.Series | None = None
-    X_test: pl.DataFrame | None = None
-    ids_test: pl.Series | None = None
-    frame: pl.DataFrame | None = None
-    test_frame: pl.DataFrame | None = None
+    ids: pd.Series | None = None
+    X_test: pd.DataFrame | None = None
+    ids_test: pd.Series | None = None
+    frame: pd.DataFrame | None = None
+    test_frame: pd.DataFrame | None = None
     target_transform: TargetTransform | None = None
 
     @property

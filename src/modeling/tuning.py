@@ -24,7 +24,7 @@ from typing import Any
 
 import numpy as np
 import optuna
-import polars as pl
+import pandas as pd
 
 from modeling.config import ExperimentConfig
 from modeling.dataset import Dataset, cross_validate
@@ -54,7 +54,7 @@ class TuningResult:
     best_params: dict[str, Any]
     best_value: float
     n_trials: int
-    trials: pl.DataFrame
+    trials: pd.DataFrame
     study_name: str = ""
     n_new_trials: int = 0
 
@@ -256,7 +256,7 @@ def tune(
     )
 
 
-def trials_frame(study: optuna.Study) -> pl.DataFrame:
+def trials_frame(study: optuna.Study) -> pd.DataFrame:
     """試行一覧をDataFrameにする（パラメータは `param_` 接頭辞の列）。"""
     rows = [
         {
@@ -267,4 +267,4 @@ def trials_frame(study: optuna.Study) -> pl.DataFrame:
         }
         for t in study.trials
     ]
-    return pl.DataFrame(rows)
+    return pd.DataFrame(rows)

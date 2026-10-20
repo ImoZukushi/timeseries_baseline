@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 from pydantic import ValidationError
 from sklearn import metrics as skm
@@ -247,7 +247,7 @@ def test_sanitize_metric_key() -> None:
 
 
 def test_binary_experiment_with_new_metrics_logs_to_mlflow(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     import mlflow
 
@@ -277,5 +277,5 @@ def test_binary_experiment_with_new_metrics_logs_to_mlflow(
     logged = mlflow.get_run(result.run_id).data.metrics
     assert "oof_pauc_0.05" in logged
     assert logged["oof_pr_auc"] == pytest.approx(result.cv_result.oof_scores["pr_auc"])
-    scores = pl.read_csv(result.output_dir / "cv_scores.csv")
+    scores = pd.read_csv(result.output_dir / "cv_scores.csv")
     assert "pauc@0.05" in scores.columns

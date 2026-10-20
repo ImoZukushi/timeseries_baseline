@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
+from pandas_helpers import as_list, row_at
 
 from modeling.config import ExperimentConfig
 from modeling.experiment import prepare_dataset, run_experiment
@@ -37,7 +38,7 @@ def _config(
     return ExperimentConfig.model_validate(raw | overrides)
 
 
-def _run(frame: pl.DataFrame, cfg: ExperimentConfig) -> tuple[Any, Any]:
+def _run(frame: pd.DataFrame, cfg: ExperimentConfig) -> tuple[Any, Any]:
     ds = prepare_dataset(cfg, frame)
     return ds, run_cv(cfg, ds.X, ds.y, ds.folds, n_classes=ds.n_classes)
 
@@ -52,16 +53,16 @@ def test_sample_oof_rows_limits_and_skips_unpredicted() -> None:
 
 
 @pytest.mark.parametrize("model", ["lightgbm", "xgboost"])
-def test_tree_shap_is_additive_for_regression(synthetic_frame: pl.DataFrame, model: str) -> None:
+def test_tree_shap_is_additive_for_regression(synthetic_frame: pd.DataFrame, model: str) -> None:
     ds, result = _run(synthetic_frame, _config("regression", model))
     shap_result = compute_oof_shap(_config("regression", model), ds.X, ds.folds, result)
     assert shap_result.explainer_kind == "tree"
-    assert shap_result.values.shape == (synthetic_frame.height, ds.X.width)
+    assert shap_result.values.shape == (len(synthetic_frame), ds.X.shape[1])
     reconstructed = shap_result.values.sum(axis=1) + shap_result.base_values
     assert reconstructed == pytest.approx(result.oof_pred[shap_result.rows], abs=1e-4)
 
 
-def test_tree_shap_binary_is_in_log_odds(synthetic_frame: pl.DataFrame) -> None:
+def test_tree_shap_binary_is_in_log_odds(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("binary")
     ds, result = _run(synthetic_frame, cfg)
     shap_result = compute_oof_shap(cfg, ds.X, ds.folds, result)
@@ -70,19 +71,19 @@ def test_tree_shap_binary_is_in_log_odds(synthetic_frame: pl.DataFrame) -> None:
     assert 1 / (1 + np.exp(-logit)) == pytest.approx(result.oof_pred[shap_result.rows], abs=1e-5)
 
 
-def test_tree_shap_multiclass_has_class_axis(synthetic_frame: pl.DataFrame) -> None:
+def test_tree_shap_multiclass_has_class_axis(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("multiclass")
     ds, result = _run(synthetic_frame, cfg)
     shap_result = compute_oof_shap(cfg, ds.X, ds.folds, result, n_classes=ds.n_classes)
-    assert shap_result.values.shape == (synthetic_frame.height, ds.X.width, 3)
-    assert shap_result.base_values.shape == (synthetic_frame.height, 3)
+    assert shap_result.values.shape == (len(synthetic_frame), ds.X.shape[1], 3)
+    assert shap_result.base_values.shape == (len(synthetic_frame), 3)
     importance = shap_result.importance(["low", "mid", "high"])
     assert {"mean_abs_shap_low", "mean_abs_shap_mid", "mean_abs_shap_high"} <= set(
         importance.columns
     )
 
 
-def test_permutation_shap_is_additive_for_non_tree_model(synthetic_frame: pl.DataFrame) -> None:
+def test_permutation_shap_is_additive_for_non_tree_model(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("regression", "linear", explain={"max_samples": 30})
     ds, result = _run(synthetic_frame, cfg)
     shap_result = compute_oof_shap(cfg, ds.X, ds.folds, result)
@@ -92,14 +93,14 @@ def test_permutation_shap_is_additive_for_non_tree_model(synthetic_frame: pl.Dat
     assert reconstructed == pytest.approx(result.oof_pred[shap_result.rows], abs=1e-6)
 
 
-def test_shap_importance_ranks_signal_feature_first(synthetic_frame: pl.DataFrame) -> None:
+def test_shap_importance_ranks_signal_feature_first(synthetic_frame: pd.DataFrame) -> None:
     # y_reg = 2a + b + ノイズ なので a が最も重要
     ds, result = _run(synthetic_frame, _config())
     importance = compute_oof_shap(_config(), ds.X, ds.folds, result).importance()
-    assert importance["feature"].to_list()[:2] == ["a", "b"]
+    assert importance["feature"].pipe(as_list)[:2] == ["a", "b"]
 
 
-def test_shap_skips_rows_not_predicted_by_time_series_cv(synthetic_frame: pl.DataFrame) -> None:
+def test_shap_skips_rows_not_predicted_by_time_series_cv(synthetic_frame: pd.DataFrame) -> None:
     raw = _config().model_dump(mode="json", by_alias=True)
     raw.update(task="time_series", cv={"method": "time_series", "n_splits": 3})
     raw["data"]["time_col"] = "ts"
@@ -110,7 +111,7 @@ def test_shap_skips_rows_not_predicted_by_time_series_cv(synthetic_frame: pl.Dat
     assert len(shap_result.rows) == int((result.fold_ids >= 0).sum())
 
 
-def test_save_shap_outputs_multiclass(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_save_shap_outputs_multiclass(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     cfg = _config("multiclass")
     ds, result = _run(synthetic_frame, cfg)
     shap_result = compute_oof_shap(cfg, ds.X, ds.folds, result, n_classes=3)
@@ -137,13 +138,13 @@ def test_save_shap_outputs_multiclass(synthetic_frame: pl.DataFrame, tmp_path: P
         *per_class,
     }
     assert all(p.is_file() for p in paths)
-    values = pl.read_parquet(tmp_path / "shap_values.parquet")
+    values = pd.read_parquet(tmp_path / "shap_values.parquet")
     assert values.columns[0] == "row"
-    assert values.width == 1 + ds.X.width * 3
+    assert values.shape[1] == 1 + ds.X.shape[1] * 3
 
 
 def test_save_shap_outputs_regression_correlation_top_k(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     cfg = _config(explain={"correlation_top_k": 3, "scatter_matrix_top_k": 2})
     ds, result = _run(synthetic_frame, cfg)
@@ -159,16 +160,16 @@ def test_save_shap_outputs_regression_correlation_top_k(
         "shap_value_scatter_matrix.png",
     } <= names
     # 相関行列は上位3特徴量のみ（先頭列 feature + k列）
-    k = min(3, ds.X.width)
-    matrix = pl.read_csv(tmp_path / "shap_value_correlation.csv")
+    k = min(3, ds.X.shape[1])
+    matrix = pd.read_csv(tmp_path / "shap_value_correlation.csv")
     assert matrix.shape == (k, k + 1)
     # y_reg = 2a + b + ノイズ なので a の値が大きいほど予測が上がる
-    corr = pl.read_csv(tmp_path / "shap_feature_correlation.csv")
-    assert corr.row(0, named=True)["feature"] == "a"
-    assert corr.row(0, named=True)["direction"] == "正"
+    corr = pd.read_csv(tmp_path / "shap_feature_correlation.csv")
+    assert row_at(corr, 0)["feature"] == "a"
+    assert row_at(corr, 0)["direction"] == "正"
 
 
-def test_run_experiment_writes_shap_outputs(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_run_experiment_writes_shap_outputs(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     cfg = _config()
     ds = prepare_dataset(cfg, synthetic_frame)
     result = run_experiment(cfg, ds, output_root=tmp_path)

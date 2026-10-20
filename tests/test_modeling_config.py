@@ -271,10 +271,10 @@ def test_bundled_feature_search_configs_are_valid() -> None:
     paths = sorted((REPO_ROOT / "configs" / "experiments").glob("fe_*.yaml"))
     configs = {p.stem: load_experiment_config(p) for p in paths}
     assert {"fe_base", "fe_target_encoding", "fe_date_parts"} <= set(configs)
-    assert _step_names(configs["fe_base"]) == ["PolarsOrdinalEncoder"]
-    assert _step_names(configs["fe_target_encoding"]) == ["RareLabelGrouper", "PolarsTargetEncoder"]
+    assert _step_names(configs["fe_base"]) == ["PandasOrdinalEncoder"]
+    assert _step_names(configs["fe_target_encoding"]) == ["RareLabelGrouper", "PandasTargetEncoder"]
     assert _step_names(configs["fe_date_parts"]) == [
-        "PolarsOrdinalEncoder",
+        "PandasOrdinalEncoder",
         "DatetimeFeaturesExtractor",
         "DropColumns",
     ]

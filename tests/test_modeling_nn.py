@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 import optuna
-import polars as pl
+import pandas as pd
 import pytest
 
 pytest.importorskip("torch")
@@ -62,19 +62,19 @@ def test_mlp_module_output_shape() -> None:
 
 @pytest.mark.parametrize("model", ["mlp", "cnn1d"])
 @pytest.mark.parametrize("task", ["regression", "binary", "multiclass"])
-def test_nn_run_cv_same_interface(synthetic_frame: pl.DataFrame, task: str, model: str) -> None:
+def test_nn_run_cv_same_interface(synthetic_frame: pd.DataFrame, task: str, model: str) -> None:
     cfg = _config(task, model)
     ds = prepare_dataset(cfg, synthetic_frame, synthetic_frame.head(5))
     result = run_cv(cfg, ds.X, ds.y, ds.folds, X_test=ds.X_test, n_classes=ds.n_classes)
     assert not np.isnan(result.oof_pred).any()
     assert result.test_pred is not None and result.test_pred.shape[0] == 5
     if task == "multiclass":
-        assert result.oof_pred.sum(axis=1) == pytest.approx(np.ones(synthetic_frame.height))
+        assert result.oof_pred.sum(axis=1) == pytest.approx(np.ones(len(synthetic_frame)))
     if task != "regression":
         assert ((result.oof_pred >= 0) & (result.oof_pred <= 1)).all()
 
 
-def test_nn_learns_signal(synthetic_frame: pl.DataFrame) -> None:
+def test_nn_learns_signal(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("regression", "mlp", model={"name": "mlp", "params": {"max_epochs": 60}})
     ds = prepare_dataset(cfg, synthetic_frame)
     model = run_cv(cfg, ds.X, ds.y, ds.folds)
@@ -82,7 +82,7 @@ def test_nn_learns_signal(synthetic_frame: pl.DataFrame) -> None:
     assert model.oof_scores["rmse"] < baseline.oof_scores["rmse"] / 2
 
 
-def test_nn_is_reproducible_with_seed(synthetic_frame: pl.DataFrame) -> None:
+def test_nn_is_reproducible_with_seed(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("regression", "mlp")
     ds = prepare_dataset(cfg, synthetic_frame)
     a = run_cv(cfg, ds.X, ds.y, ds.folds)
@@ -90,7 +90,7 @@ def test_nn_is_reproducible_with_seed(synthetic_frame: pl.DataFrame) -> None:
     assert np.allclose(a.oof_pred, b.oof_pred)
 
 
-def test_nn_early_stopping_and_refit(synthetic_frame: pl.DataFrame) -> None:
+def test_nn_early_stopping_and_refit(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config(
         "regression",
         "mlp",
@@ -118,7 +118,7 @@ def test_nn_multiclass_with_missing_class_in_training() -> None:
     assert list(model.classes_) == [0, 1, 2]
 
 
-def test_nn_permutation_shap(synthetic_frame: pl.DataFrame) -> None:
+def test_nn_permutation_shap(synthetic_frame: pd.DataFrame) -> None:
     cfg = _config("regression", "mlp", explain={"max_samples": 20})
     ds = prepare_dataset(cfg, synthetic_frame)
     result = run_cv(cfg, ds.X, ds.y, ds.folds)

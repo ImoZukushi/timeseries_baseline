@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
-import polars as pl
+import pandas as pd
 import yaml
 
 from evaluation.curves import HorizonErrorDisplay
@@ -62,7 +62,7 @@ def resolve_path(path: Path) -> Path:
     return path if path.is_absolute() else get_repo_root() / path
 
 
-def load_table(path: Path) -> pl.DataFrame:
+def load_table(path: Path) -> pd.DataFrame:
     """CSV（エンコーディング自動判定）またはParquetを読み込む。
 
     Raises:
@@ -70,7 +70,7 @@ def load_table(path: Path) -> pl.DataFrame:
     """
     resolved = resolve_path(path)
     if resolved.suffix == ".parquet":
-        return pl.read_parquet(resolved)
+        return pd.read_parquet(resolved)
     if resolved.suffix == ".csv":
         return read_csv_auto(resolved)
     raise ValueError(f"未対応のファイル形式です: {resolved}")
@@ -91,7 +91,7 @@ def select_feature_columns(config: ExperimentConfig, columns: list[str]) -> list
 
 
 def prepare_dataset(
-    config: ExperimentConfig, train: pl.DataFrame, test: pl.DataFrame | None = None
+    config: ExperimentConfig, train: pd.DataFrame, test: pd.DataFrame | None = None
 ) -> Dataset:
     """読み込み済みのDataFrameから学習用データ一式を作る。
 
@@ -115,11 +115,15 @@ def prepare_dataset(
     if missing:
         raise KeyError(f"学習データに列がありません: {missing}")
     if data.time_col is not None:
-        train = train.sort(data.time_col, maintain_order=True)
+        train = train.sort_values(data.time_col, kind="stable")
         if test is not None and data.time_col in test.columns:
-            test = test.sort(data.time_col, maintain_order=True)
+            test = test.sort_values(data.time_col, kind="stable")
+    # CVの分割は行の位置で表すため、インデックスを0始まりの連番にそろえる
+    train = train.reset_index(drop=True)
+    if test is not None:
+        test = test.reset_index(drop=True)
 
-    features = select_feature_columns(config, train.columns)
+    features = select_feature_columns(config, list(train.columns))
     y, classes = encode_target(train[data.target].to_numpy(), config.task)
     groups = None if data.group_col is None else train[data.group_col].to_numpy()
     folds = make_folds(config.cv, train, y, groups, time_column=data.time_col)
@@ -139,7 +143,7 @@ def prepare_dataset(
             model_frame = target_transform.fit(train).transform_frame(train)
         frame = builder.build(model_frame)
         return Dataset(
-            X=frame.select([*features, *builder.feature_names]),
+            X=frame[[*features, *builder.feature_names]],
             y=y,
             classes=classes,
             folds=folds,
@@ -151,12 +155,12 @@ def prepare_dataset(
         )
 
     return Dataset(
-        X=train.select(features),
+        X=train[features],
         y=y,
         classes=classes,
         folds=folds,
         ids=None if data.id_col is None else train[data.id_col],
-        X_test=None if test is None else test.select(features),
+        X_test=None if test is None else test[features],
         ids_test=ids_test,
     )
 
@@ -196,7 +200,7 @@ def save_cv_outputs(
     ]
     score_rows.append({"fold": "oof", **result.oof_scores})
     scores_path = output_dir / "cv_scores.csv"
-    pl.DataFrame(score_rows).write_csv(scores_path)
+    pd.DataFrame(score_rows).to_csv(scores_path, index=False)
 
     oof = predictions_to_frame(result.oof_pred, dataset.ids, result.fold_ids, dataset.y)
     paths = [config_path, scores_path, save_predictions(oof, output_dir / OOF_FILENAME)]
@@ -211,7 +215,7 @@ def save_horizon_outputs(
 ) -> list[Path]:
     """再帰予測のステップ別スコア（表と折れ線グラフ）を保存する。"""
     table_path = output_dir / "horizon_scores.csv"
-    result.horizon_scores.write_csv(table_path)
+    result.horizon_scores.to_csv(table_path, index=False)
     metric = config.primary_metric
     fig = HorizonErrorDisplay.from_scores(
         result.horizon_scores,
@@ -233,7 +237,7 @@ def save_horizon_outputs(
 def save_tuning_outputs(result: TuningResult, storage: Path, output_dir: Path) -> list[Path]:
     """チューニングの試行一覧（`tuning_trials.csv`）と要約（`tuning_summary.yaml`）を保存する。"""
     trials_path = output_dir / "tuning_trials.csv"
-    result.trials.write_csv(trials_path)
+    result.trials.to_csv(trials_path, index=False)
     summary_path = output_dir / "tuning_summary.yaml"
     with summary_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(
@@ -318,8 +322,8 @@ def run_experiment(
             {
                 "config": config.model_dump(mode="json", by_alias=True),
                 "resolved_params": result.params,
-                "n_train": dataset.X.height,
-                "n_features": dataset.X.width,
+                "n_train": len(dataset.X),
+                "n_features": dataset.X.shape[1],
             }
         )
         for i in range(len(dataset.folds)):

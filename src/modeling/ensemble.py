@@ -27,7 +27,6 @@ from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
-import polars as pl
 import yaml
 from scipy.optimize import minimize
 from scipy.stats import rankdata
@@ -66,7 +65,7 @@ class MemberPredictions:
     fold_ids: np.ndarray
     target: np.ndarray
     test: np.ndarray | None
-    test_ids: pl.Series | None
+    test_ids: pd.Series | None
     source: str
 
 
@@ -119,9 +118,9 @@ def load_member(
             assert member.path is not None
             directory = member.path if member.path.is_absolute() else get_repo_root() / member.path
             source = str(directory)
-        oof_frame = pl.read_parquet(directory / OOF_FILENAME)
+        oof_frame = pd.read_parquet(directory / OOF_FILENAME)
         test_path = directory / TEST_FILENAME
-        test_frame = pl.read_parquet(test_path) if test_path.is_file() else None
+        test_frame = pd.read_parquet(test_path) if test_path.is_file() else None
 
     return MemberPredictions(
         name=member.name,
@@ -327,7 +326,7 @@ class EnsembleResult:
 
     oof_pred: np.ndarray
     test_pred: np.ndarray | None
-    scores: pl.DataFrame
+    scores: pd.DataFrame
     weights: dict[str, float] | None
     output_dir: Path
     run_id: str | None
@@ -407,7 +406,7 @@ def run_ensemble(
             **{mt.name: mt(y[predicted], ens_oof[predicted]) for mt in metrics},
         }
     )
-    scores = pl.DataFrame(rows)
+    scores = pd.DataFrame(rows)
 
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output_dir = (output_root or outputs_dir() / "ensembles") / config.name / stamp
@@ -420,7 +419,7 @@ def run_ensemble(
                 "sources": {m.name: m.source for m in members},
             }
         )
-        ens_scores = scores.row(-1, named=True)
+        ens_scores = scores.tail(1).to_dict("records")[0]
         tracker.log_metrics({f"oof_{k}": v for k, v in ens_scores.items() if k != "model"})
         if weights is not None:
             tracker.log_metrics({f"weight_{k}": v for k, v in weights.items()})
@@ -446,7 +445,7 @@ def _save_ensemble_outputs(
     members: list[MemberPredictions],
     ens_oof: np.ndarray,
     test_pred: np.ndarray | None,
-    scores: pl.DataFrame,
+    scores: pd.DataFrame,
     weights: dict[str, float] | None,
     output_dir: Path,
 ) -> list[Path]:
@@ -461,12 +460,12 @@ def _save_ensemble_outputs(
             sort_keys=False,
         )
     scores_path = output_dir / "ensemble_scores.csv"
-    scores.write_csv(scores_path)
+    scores.to_csv(scores_path, index=False)
     paths = [config_path, scores_path]
     if weights is not None:
         weights_path = output_dir / "weights.csv"
-        pl.DataFrame({"model": list(weights), "weight": list(weights.values())}).write_csv(
-            weights_path
+        pd.DataFrame({"model": list(weights), "weight": list(weights.values())}).to_csv(
+            weights_path, index=False
         )
         paths.append(weights_path)
     oof_frame = predictions_to_frame(ens_oof, fold_ids=ref.fold_ids, target=ref.target)

@@ -8,6 +8,7 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 
 from evaluation.shap_correlation import (
@@ -42,14 +43,14 @@ def _synthetic(n: int = 300) -> tuple[np.ndarray, np.ndarray]:
 def test_feature_correlation_direction() -> None:
     values, x = _synthetic()
     table = shap_feature_correlation(values, x, _NAMES)
-    rows = {r["feature"]: r for r in table.iter_rows(named=True)}
+    rows = {r["feature"]: r for r in table.to_dict("records")}
     assert rows["up"]["direction"] == "正"
     assert rows["up"]["pearson"] == pytest.approx(1.0)
     assert rows["down"]["direction"] == "負"
     assert rows["down"]["spearman"] == pytest.approx(-1.0)
     # 一定の特徴量は相関が定義できない
     assert rows["const"]["direction"] == "なし"
-    assert rows["const"]["pearson"] is None
+    assert pd.isna(rows["const"]["pearson"])
     # 欠損を含む特徴量も有効な組だけで計算する
     assert rows["missing"]["pearson"] > 0.9
     # 重要度の降順
@@ -61,8 +62,8 @@ def test_value_correlation_matrix() -> None:
     a = rng.normal(size=200)
     values = np.column_stack([a, -a, rng.normal(size=200), np.zeros(200)])
     matrix = shap_value_correlation(values, ["a", "neg_a", "noise", "zero"])
-    assert matrix.columns == ["feature", "a", "neg_a", "noise", "zero"]
-    m = matrix.drop("feature").to_numpy()
+    assert list(matrix.columns) == ["feature", "a", "neg_a", "noise", "zero"]
+    m = matrix.drop(columns="feature").to_numpy()
     finite = m[:3, :3]
     assert np.allclose(finite, finite.T)
     assert np.allclose(np.diag(finite), 1.0)

@@ -5,23 +5,18 @@ from __future__ import annotations
 import datetime as dt
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
 
 from modeling.config import CVConfig
 from modeling.cv import TimeCutoffSplit, folds_to_ids, make_folds
 
 
-def _frame(n: int = 100) -> pl.DataFrame:
-    return pl.DataFrame(
+def _frame(n: int = 100) -> pd.DataFrame:
+    return pd.DataFrame(
         {
             "x": np.arange(n, dtype=float),
-            "ts": pl.datetime_range(
-                dt.datetime(2024, 1, 1),
-                dt.datetime(2024, 1, 1) + dt.timedelta(days=n - 1),
-                interval="1d",
-                eager=True,
-            ),
+            "ts": pd.date_range(dt.datetime(2024, 1, 1), periods=n, freq="D"),
         }
     )
 
@@ -108,7 +103,7 @@ def test_time_cutoff_split_uses_explicit_boundaries() -> None:
 
 
 def test_time_cutoff_split_accepts_string_time_column() -> None:
-    frame = _frame(10).with_columns(pl.col("ts").dt.strftime("%Y-%m-%d %H:%M:%S"))
+    frame = _frame(10).assign(ts=lambda d: d["ts"].dt.strftime("%Y-%m-%d %H:%M:%S"))
     folds = list(TimeCutoffSplit("ts", ["2024-01-06"]).split(frame))
     assert folds[0][1].tolist() == list(range(5, 10))
 

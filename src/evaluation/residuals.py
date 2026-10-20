@@ -12,7 +12,7 @@ from typing import Any, Literal, Self
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 from scipy import stats
 from sklearn.metrics import PredictionErrorDisplay
 
@@ -264,10 +264,10 @@ class ResidualCorrelogramDisplay:
         series = residuals if isinstance(residuals, Mapping) else {"残差": residuals}
         acf, pacf, n_obs = {}, {}, {}
         for name, values in series.items():
-            s = pl.Series(np.asarray(values, dtype=np.float64)).fill_nan(None).drop_nulls()
+            s = pd.Series(np.asarray(values, dtype=np.float64)).dropna()
             acf[str(name)] = compute_acf(s, nlags=nlags)
             pacf[str(name)] = compute_pacf(s, nlags=nlags)
-            n_obs[str(name)] = s.len()
+            n_obs[str(name)] = len(s)
         return cls(acf, pacf, n_obs).plot(ax=ax)
 
     @classmethod

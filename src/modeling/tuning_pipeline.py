@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import polars as pl
+import pandas as pd
 import yaml
 
 from modeling.config import (
@@ -80,7 +80,7 @@ class PipelineResult:
     output_dir: Path
     members: dict[str, ExperimentResult]
     ensembles: dict[str, EnsembleResult] = field(default_factory=dict)
-    summary: pl.DataFrame = field(default_factory=pl.DataFrame)
+    summary: pd.DataFrame = field(default_factory=pd.DataFrame)
     final: dict[str, Any] = field(default_factory=dict)
 
 
@@ -151,7 +151,7 @@ def validate_members(config: TuningPipelineConfig, members: list[PipelineMember]
         _ensemble_configs(config, members, {n: Path(n) for n in names})
 
 
-def _scores_row(kind: str, name: str, scores: dict[str, float]) -> dict[str, Any]:
+def _scores_row(kind: str, name: str, scores: dict[Any, Any]) -> dict[str, Any]:
     return {"kind": kind, "name": name, **scores}
 
 
@@ -243,7 +243,7 @@ def run_tuning_pipeline(
         say("  CV: " + ", ".join(f"{k}={v:.6g}" for k, v in scores.items()))
 
     member_rows = [_member_row(m, results[m.config.name]) for m in members]
-    pl.DataFrame(member_rows).write_csv(out / "members.csv")
+    pd.DataFrame(member_rows).to_csv(out / "members.csv", index=False)
     _write_yaml(out / "best_params.yaml", {name: r.cv_result.params for name, r in results.items()})
     _write_yaml(
         out / "pipeline.yaml",
@@ -271,10 +271,10 @@ def run_tuning_pipeline(
             )
         # 構成モデル単体のスコアは、アンサンブルと同じ行（OOF予測がある行）で計算した値を使う
         first_scores = next(iter(ensembles.values())).scores
-        for row in first_scores.head(len(members)).iter_rows(named=True):
+        for row in first_scores.head(len(members)).to_dict("records"):
             rows.append(_scores_row("member", row.pop("model"), row))
         for method, ens in ensembles.items():
-            row = ens.scores.row(-1, named=True)
+            row = ens.scores.tail(1).to_dict("records")[0]
             row.pop("model")
             rows.append(_scores_row("ensemble", method, row))
     else:
@@ -283,15 +283,17 @@ def run_tuning_pipeline(
         rows.append(_scores_row("member", first.name, oof))
 
     primary = get_metric(metric_names[0])
-    summary = pl.DataFrame(rows).with_columns(
-        pl.col(primary.name)
-        .rank("min", descending=primary.direction == "maximize")
-        .cast(pl.Int64)
-        .alias("rank")
+    summary = pd.DataFrame(rows)
+    # 同点は同じ順位（小さい方）にする。スコアが欠損の行は順位も欠損
+    summary["rank"] = (
+        summary[primary.name]
+        .rank(method="min", ascending=primary.direction != "maximize")
+        .astype("Int64")
     )
-    summary.write_csv(out / "summary.csv")
+    summary.to_csv(out / "summary.csv", index=False)
 
-    best = summary.sort("rank").row(0, named=True)
+    # to_dict("records") はPythonの組み込み型で返すため、そのままYAMLに書ける
+    best = summary.sort_values("rank", kind="stable").head(1).to_dict("records")[0]
     final: dict[str, Any] = {
         "kind": best["kind"],
         "name": best["name"],

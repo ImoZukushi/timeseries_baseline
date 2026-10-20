@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Self
 
 import numpy as np
-import polars as pl
+import pandas as pd
 
 from evaluation._common import as_1d_float, new_axes, subsample_index
 from util.plotting import ensure_japanese_font
@@ -35,7 +35,7 @@ def _design_matrix(X: Any) -> np.ndarray:
     return np.column_stack([np.ones(arr.shape[0]), arr])
 
 
-def compute_influence(X: Any, residuals: Any) -> pl.DataFrame:
+def compute_influence(X: Any, residuals: Any) -> pd.DataFrame:
     """Leverage・標準化残差・Cook の距離をサンプルごとに計算する。
 
     特異値分解でハット行列の対角を求めるため、特徴量が互いに線形従属（多重共線性）でも計算できる
@@ -68,7 +68,8 @@ def compute_influence(X: Any, residuals: Any) -> pl.DataFrame:
     with np.errstate(divide="ignore", invalid="ignore"):
         standardized = e / np.sqrt(s2 * (1.0 - leverage))
         cooks = standardized**2 / rank * leverage / (1.0 - leverage)
-    return pl.DataFrame(
+    # 計算できない値（Leverageが1の行など）はNaNのまま残す
+    return pd.DataFrame(
         {
             "row": np.arange(n),
             "leverage": leverage,
@@ -76,7 +77,7 @@ def compute_influence(X: Any, residuals: Any) -> pl.DataFrame:
             "standardized_residual": standardized,
             "cooks_distance": cooks,
         }
-    ).with_columns(pl.selectors.float().fill_nan(None))
+    )
 
 
 class InfluenceDisplay:
@@ -89,7 +90,7 @@ class InfluenceDisplay:
         ax_: 描画したAxes（2個）。
     """
 
-    def __init__(self, influence: pl.DataFrame, n_params: int) -> None:
+    def __init__(self, influence: pd.DataFrame, n_params: int) -> None:
         self.influence = influence
         self.n_params = n_params
 
@@ -110,24 +111,32 @@ class InfluenceDisplay:
         X_arr = np.asarray(X, dtype=np.float64)[mask]
         influence = compute_influence(X_arr, t[mask] - p[mask])
         # 元の行番号に戻す（欠損行を除いたため）
-        influence = influence.with_columns(pl.Series("row", np.flatnonzero(mask)))
+        influence = influence.assign(row=np.flatnonzero(mask))
         n_params = int(round(float(influence["leverage"].sum())))
         return cls(influence, n_params).plot(ax=ax, max_points=max_points, n_labels=n_labels)
 
-    def top(self, k: int = 20) -> pl.DataFrame:
-        """Cook の距離が大きい順に上位 `k` 行を返す。"""
-        return self.influence.sort("cooks_distance", descending=True, nulls_last=True).head(k)
+    def top(self, k: int = 20) -> pd.DataFrame:
+        """Cook の距離が大きい順に上位 `k` 行を返す（欠損は最後）。"""
+        return (
+            self.influence.sort_values(
+                "cooks_distance", ascending=False, na_position="last", kind="stable"
+            )
+            .head(k)
+            .reset_index(drop=True)
+        )
 
     def plot(self, ax: Any = None, *, max_points: int | None = 5000, n_labels: int = 5) -> Self:
         """2枚組の図を描く（`ax` を渡す場合は2個の並び）。"""
         ensure_japanese_font()
         fig, axes = new_axes(ax, ncols=2, figsize=(14, 5.5))
-        inf = self.influence.drop_nulls(["leverage", "standardized_residual", "cooks_distance"])
-        n, p = inf.height, max(self.n_params, 1)
-        top = inf.sort("cooks_distance", descending=True).head(n_labels)
+        inf = self.influence.dropna(
+            subset=["leverage", "standardized_residual", "cooks_distance"]
+        ).reset_index(drop=True)
+        n, p = len(inf), max(self.n_params, 1)
+        top = inf.sort_values("cooks_distance", ascending=False, kind="stable").head(n_labels)
         # 散布図は間引くが、Cook の距離の上位は必ず描く
         idx = subsample_index(n, max_points)
-        shown = pl.concat([inf[idx], top]).unique("row", keep="first")
+        shown = pd.concat([inf.iloc[idx], top]).drop_duplicates("row", keep="first")
 
         a = axes.flat[0]
         a.scatter(shown["leverage"], shown["standardized_residual"], s=10, alpha=0.4)
@@ -139,7 +148,7 @@ class InfluenceDisplay:
             a.plot(h, -bound, color="#c44e52", linestyle=style, linewidth=1)
         r_abs = float(np.nanmax(np.abs(inf["standardized_residual"].to_numpy()))) if n else 1.0
         a.set_ylim(-max(r_abs, 3) * 1.1, max(r_abs, 3) * 1.1)
-        for row in top.iter_rows(named=True):
+        for row in top.to_dict("records"):
             a.annotate(str(row["row"]), (row["leverage"], row["standardized_residual"]), fontsize=8)
         a.axhline(0, color="gray", linewidth=0.8)
         a.set_xlabel("Leverage（ハット行列の対角）")
@@ -157,7 +166,7 @@ class InfluenceDisplay:
             linewidth=1,
             label=f"目安 4/n={threshold:.2g}",
         )
-        for row in top.iter_rows(named=True):
+        for row in top.to_dict("records"):
             b.annotate(str(row["row"]), (row["row"], row["cooks_distance"]), fontsize=8)
         b.set_ylim(bottom=0)
         b.set_xlabel("行番号")

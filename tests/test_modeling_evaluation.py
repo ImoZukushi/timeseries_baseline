@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
+from pandas_helpers import as_list
 from pydantic import ValidationError
 
 from modeling.config import EvaluationConfig, ExperimentConfig
@@ -56,7 +57,7 @@ def _config(task: str, model_name: str = "lightgbm", **overrides: Any) -> Experi
     return ExperimentConfig.model_validate(raw | overrides)
 
 
-def _run(frame: pl.DataFrame, config: ExperimentConfig, tmp_path: Path) -> Any:
+def _run(frame: pd.DataFrame, config: ExperimentConfig, tmp_path: Path) -> Any:
     return run_experiment(config, prepare_dataset(config, frame), output_root=tmp_path)
 
 
@@ -79,29 +80,29 @@ def test_evaluation_config_validation() -> None:
 # --- タスクごとの出力 ---------------------------------------------------------------------
 
 
-def test_regression_outputs(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_regression_outputs(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     result = _run(synthetic_frame, _config("regression"), tmp_path)
     files = _files(result)
     assert files == REGRESSION_FILES  # 時刻列が無いので残差ACFは作らない
-    top = pl.read_csv(result.output_dir / "evaluation" / "top_cooks_distance.csv")
+    top = pd.read_csv(result.output_dir / "evaluation" / "top_cooks_distance.csv")
     assert {"row", "leverage", "cooks_distance", "fold", "id"} <= set(top.columns)
-    summary = pl.read_csv(result.output_dir / "evaluation" / "residual_summary.csv")
+    summary = pd.read_csv(result.output_dir / "evaluation" / "residual_summary.csv")
     # 残差の要約のRMSEは、実験のOOF RMSEと一致する
     assert summary["rmse"][0] == pytest.approx(result.cv_result.oof_scores["rmse"])
 
 
 @pytest.mark.parametrize("task", ["binary", "multiclass"])
-def test_classification_outputs(synthetic_frame: pl.DataFrame, tmp_path: Path, task: str) -> None:
+def test_classification_outputs(synthetic_frame: pd.DataFrame, tmp_path: Path, task: str) -> None:
     assert _files(_run(synthetic_frame, _config(task), tmp_path)) == CLASSIFICATION_FILES
 
 
-def test_disabled_evaluation_writes_nothing(synthetic_frame: pl.DataFrame, tmp_path: Path) -> None:
+def test_disabled_evaluation_writes_nothing(synthetic_frame: pd.DataFrame, tmp_path: Path) -> None:
     result = _run(synthetic_frame, _config("regression", evaluation={"enabled": False}), tmp_path)
     assert not (result.output_dir / "evaluation").exists()
 
 
 def test_linear_model_has_no_training_history(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     config = _config("regression", model_name="linear", model={"name": "linear"})
     files = _files(_run(synthetic_frame, config, tmp_path))
@@ -110,7 +111,7 @@ def test_linear_model_has_no_training_history(
 
 
 def test_learning_and_validation_curves_only_when_configured(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     config = _config(
         "regression",
@@ -121,16 +122,16 @@ def test_learning_and_validation_curves_only_when_configured(
     )
     result = _run(synthetic_frame, config, tmp_path)
     directory = result.output_dir / "evaluation"
-    learning = pl.read_csv(directory / "learning_curve.csv")
-    validation = pl.read_csv(directory / "validation_curve.csv")
-    assert learning.height == 2
-    assert validation["param_value"].cast(pl.Float64).to_list() == pytest.approx([0.05, 0.2])
+    learning = pd.read_csv(directory / "learning_curve.csv")
+    validation = pd.read_csv(directory / "validation_curve.csv")
+    assert len(learning) == 2
+    assert validation["param_value"].astype(float).pipe(as_list) == pytest.approx([0.05, 0.2])
     # スコアは元の向き（RMSEは正の値）で保存される
     assert (learning["valid_mean"] > 0).all()
     assert {"learning_curve.png", "validation_curve.png"} <= _files(result)
 
 
-def _ts_frame(n_days: int = 200) -> pl.DataFrame:
+def _ts_frame(n_days: int = 200) -> pd.DataFrame:
     rng = np.random.default_rng(0)
     rows = []
     for sid, level in (("A", 20.0), ("B", 50.0)):
@@ -142,7 +143,12 @@ def _ts_frame(n_days: int = 200) -> pl.DataFrame:
                     "y": level + 3 * np.sin(2 * np.pi * i / 7) + rng.normal(),
                 }
             )
-    return pl.DataFrame(rows).sort("date", "sid")
+    return (
+        pd.DataFrame(rows)
+        .assign(date=lambda d: pd.to_datetime(d["date"]))
+        .sort_values(["date", "sid"], kind="stable")
+        .reset_index(drop=True)
+    )
 
 
 def test_forecast_outputs_include_residual_correlogram(tmp_path: Path) -> None:
@@ -158,7 +164,7 @@ def test_forecast_outputs_include_residual_correlogram(tmp_path: Path) -> None:
             },
             "features": [
                 {
-                    "class": "feature_engineering.categorical.PolarsOrdinalEncoder",
+                    "class": "feature_engineering.categorical.PandasOrdinalEncoder",
                     "params": {"variables": ["sid"]},
                 }
             ],
@@ -181,7 +187,7 @@ def test_forecast_outputs_include_residual_correlogram(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("model", ["lightgbm", "xgboost"])
 def test_training_history_recorded_without_changing_early_stopping(
-    synthetic_frame: pl.DataFrame, model: str
+    synthetic_frame: pd.DataFrame, model: str
 ) -> None:
     with_history = _config(
         "regression",
@@ -206,7 +212,7 @@ def test_training_history_recorded_without_changing_early_stopping(
         assert len(history.valid) >= (best or 0)
 
 
-def test_nn_training_history(synthetic_frame: pl.DataFrame) -> None:
+def test_nn_training_history(synthetic_frame: pd.DataFrame) -> None:
     pytest.importorskip("skorch")
     config = _config(
         "regression",
@@ -233,7 +239,7 @@ def _ts_config(**evaluation: Any) -> ExperimentConfig:
             },
             "features": [
                 {
-                    "class": "feature_engineering.categorical.PolarsOrdinalEncoder",
+                    "class": "feature_engineering.categorical.PandasOrdinalEncoder",
                     "params": {"variables": ["sid"]},
                 }
             ],
@@ -252,18 +258,18 @@ def test_multi_series_residuals_are_split_per_series(tmp_path: Path) -> None:
 
     result = _run(_ts_frame(), _ts_config(), tmp_path)
     directory = result.output_dir / "evaluation"
-    summary = pl.read_csv(directory / "residual_summary.csv")
+    summary = pd.read_csv(directory / "residual_summary.csv")
     # 全体の1行 ＋ 系列ごとの行
-    assert summary["series"].to_list() == ["all", "A", "B"]
-    assert summary.filter(pl.col("series") != "all")["n"].sum() == summary["n"][0]
+    assert summary["series"].pipe(as_list) == ["all", "A", "B"]
+    assert summary.loc[summary["series"] != "all", "n"].sum() == summary["n"].iloc[0]
     # 系列ごとに2枚のパネルを横に並べるため、1系列の図より横長になる
     single = _run(_ts_frame(), _ts_config(max_series=1), tmp_path / "single")
     wide = mpimg.imread(directory / "qq_plot.png").shape
     narrow = mpimg.imread(single.output_dir / "evaluation" / "qq_plot.png").shape
     assert wide[1] > narrow[1]
     # 図に描く系列を絞っても、要約表には全系列が残る
-    single_summary = pl.read_csv(single.output_dir / "evaluation" / "residual_summary.csv")
-    assert single_summary["series"].to_list() == ["all", "A", "B"]
+    single_summary = pd.read_csv(single.output_dir / "evaluation" / "residual_summary.csv")
+    assert single_summary["series"].pipe(as_list) == ["all", "A", "B"]
 
 
 def test_forecast_residual_diagnostics_recursive_and_onestep(tmp_path: Path) -> None:
@@ -280,14 +286,14 @@ def test_forecast_residual_diagnostics_recursive_and_onestep(tmp_path: Path) -> 
         "residual_diagnostics__onestep__A.png",
         "residual_diagnostics__onestep__B.png",
     } <= files
-    tests = pl.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
-    assert tests.select("residual_type", "series").rows() == [
+    tests = pd.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
+    assert list(tests[["residual_type", "series"]].itertuples(index=False, name=None)) == [
         ("recursive", "A"),
         ("recursive", "B"),
         ("onestep", "A"),
         ("onestep", "B"),
     ]
-    lb = pl.read_csv(result.output_dir / "evaluation" / "ljung_box.csv")
+    lb = pd.read_csv(result.output_dir / "evaluation" / "ljung_box.csv")
     assert set(lb["lag"]) == {3, 7}
 
 
@@ -297,12 +303,12 @@ def test_forecast_residual_diagnostics_respect_max_series(tmp_path: Path) -> Non
     assert "residual_diagnostics__onestep__A.png" in files
     assert "residual_diagnostics__onestep__B.png" not in files
     # 検定の表は全系列
-    tests = pl.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
+    tests = pd.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
     assert set(tests["series"]) == {"A", "B"}
 
 
 def test_time_series_task_without_forecast_uses_oof_residuals(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     raw = _config("regression").model_dump(mode="json", by_alias=True)
     raw.update(task="time_series", cv={"method": "time_series", "n_splits": 3})
@@ -314,20 +320,22 @@ def test_time_series_task_without_forecast_uses_oof_residuals(
         "residual_timeseries.png",
         "residual_diagnostics__oof.png",
     } <= files
-    tests = pl.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
-    assert tests.select("residual_type", "series").rows() == [("oof", "all")]
+    tests = pd.read_csv(result.output_dir / "evaluation" / "residual_tests.csv")
+    assert list(tests[["residual_type", "series"]].itertuples(index=False, name=None)) == [
+        ("oof", "all")
+    ]
 
 
 def test_regression_without_time_col_has_no_time_series_diagnostics(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     files = _files(_run(synthetic_frame, _config("regression"), tmp_path))
     assert not any(f.startswith(("residual_tests", "residual_diagnostics")) for f in files)
 
 
 def test_single_series_summary_has_only_overall_row(
-    synthetic_frame: pl.DataFrame, tmp_path: Path
+    synthetic_frame: pd.DataFrame, tmp_path: Path
 ) -> None:
     result = _run(synthetic_frame, _config("regression"), tmp_path)
-    summary = pl.read_csv(result.output_dir / "evaluation" / "residual_summary.csv")
-    assert summary["series"].to_list() == ["all"]
+    summary = pd.read_csv(result.output_dir / "evaluation" / "residual_summary.csv")
+    assert summary["series"].pipe(as_list) == ["all"]

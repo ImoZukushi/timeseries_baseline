@@ -21,7 +21,6 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import polars as pl
 import shap
 
 from evaluation.shap_correlation import (
@@ -66,7 +65,7 @@ class ShapResult:
         """特徴量名。"""
         return [str(c) for c in self.data.columns]
 
-    def importance(self, class_names: list[str] | None = None) -> pl.DataFrame:
+    def importance(self, class_names: list[str] | None = None) -> pd.DataFrame:
         """特徴量ごとの平均|SHAP|（重要度の降順）。
 
         多クラスでは全クラス平均の `mean_abs_shap` に加えて、クラス別の列も持つ。
@@ -80,7 +79,11 @@ class ShapResult:
                 columns[f"mean_abs_shap_{name}"] = abs_values[:, :, k].mean(axis=0)
         else:
             columns["mean_abs_shap"] = abs_values.mean(axis=0)
-        return pl.DataFrame(columns).sort("mean_abs_shap", descending=True)
+        return (
+            pd.DataFrame(columns)
+            .sort_values("mean_abs_shap", ascending=False, kind="stable")
+            .reset_index(drop=True)
+        )
 
 
 def sample_oof_rows(fold_ids: np.ndarray, max_samples: int, seed: int) -> np.ndarray:
@@ -130,7 +133,7 @@ def _explain_permutation(
 
 def compute_oof_shap(
     config: ExperimentConfig,
-    X: pl.DataFrame,
+    X: pd.DataFrame,
     folds: Sequence[Fold],
     cv_result: CVResult,
     n_classes: int | None = None,
@@ -162,14 +165,14 @@ def compute_oof_shap(
         if len(fold_rows) == 0:
             continue
         preprocess, model = pipeline[:-1], pipeline.named_steps[MODEL_STEP]
-        Xt = preprocess.transform(X[fold_rows])
+        Xt = preprocess.transform(X.iloc[fold_rows])
         if kind == "tree":
             values, base = _explain_tree(model, Xt, config.task)
         else:
             # 背景分布はそのfoldの学習データから抽出する（モデルが見た分布を基準にする）
             n_bg = min(len(train_idx), _BACKGROUND_SIZE * 10)
             bg_rows = np.sort(rng.choice(train_idx, size=n_bg, replace=False))
-            background = preprocess.transform(X[bg_rows])
+            background = preprocess.transform(X.iloc[bg_rows])
             values, base = _explain_permutation(
                 model, Xt, background, config.task, n_classes, config.seed
             )
@@ -199,12 +202,13 @@ def _explanation(result: ShapResult, class_index: int | None = None) -> shap.Exp
     )
 
 
-def plot_importance_bar(importance: pl.DataFrame, title: str, max_display: int = 20) -> plt.Figure:
+def plot_importance_bar(importance: pd.DataFrame, title: str, max_display: int = 20) -> plt.Figure:
     """平均|SHAP|の横棒グラフを描く。"""
     ensure_japanese_font()
-    top = importance.head(max_display).reverse()
-    fig, ax = plt.subplots(figsize=(8, max(3, 0.35 * top.height + 1.5)), constrained_layout=True)
-    ax.barh(top["feature"].to_list(), top["mean_abs_shap"].to_list())
+    # 横棒グラフは下から描くため、重要度の高い順を逆にする
+    top = importance.head(max_display).iloc[::-1]
+    fig, ax = plt.subplots(figsize=(8, max(3, 0.35 * len(top) + 1.5)), constrained_layout=True)
+    ax.barh(top["feature"].tolist(), top["mean_abs_shap"].tolist())
     ax.set_xlim(left=0)  # 棒グラフは0起点
     ax.set_xlabel("平均 |SHAP値|")
     ax.set_title(title)
@@ -231,7 +235,7 @@ def _correlation_outputs(
     suffix: str,
     label: str,
     explain: ExplainConfig,
-) -> tuple[list[tuple[str, pl.DataFrame]], list[tuple[str, plt.Figure]]]:
+) -> tuple[list[tuple[str, pd.DataFrame]], list[tuple[str, plt.Figure]]]:
     """1組のSHAP値（回帰・二値、または多クラスの1クラス分）から相関の表・図を作る。"""
     tables = [
         (
@@ -311,7 +315,7 @@ def save_shap_outputs(
     )
     importance = result.importance(class_names)
     paths = [output_dir / "shap_importance.csv"]
-    importance.write_csv(paths[0])
+    importance.to_csv(paths[0], index=False)
 
     figures: list[tuple[str, plt.Figure]] = [
         (
@@ -349,7 +353,7 @@ def save_shap_outputs(
         )
         for filename, table in tables:
             path = output_dir / filename
-            table.write_csv(path)
+            table.to_csv(path, index=False)
             paths.append(path)
         figures.extend(corr_figures)
 
@@ -368,10 +372,9 @@ def save_shap_outputs(
         ]
     else:
         value_cols = result.feature_names
-    values_frame = pl.DataFrame(values_2d, schema=value_cols, orient="row").insert_column(
-        0, pl.Series("row", result.rows)
-    )
+    values_frame = pd.DataFrame(values_2d, columns=value_cols)
+    values_frame.insert(0, "row", result.rows)
     values_path = output_dir / "shap_values.parquet"
-    values_frame.write_parquet(values_path)
+    values_frame.to_parquet(values_path, index=False)
     paths.append(values_path)
     return paths

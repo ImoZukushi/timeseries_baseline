@@ -11,7 +11,7 @@
 # configs/features/categorical_ordinal.yaml
 description: 列車番号・停車駅名の序数エンコーディング
 steps:
-  - class: feature_engineering.categorical.PolarsOrdinalEncoder
+  - class: feature_engineering.categorical.PandasOrdinalEncoder
     params: {variables: [列車番号, 停車駅名]}
 ```
 

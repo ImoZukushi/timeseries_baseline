@@ -29,7 +29,7 @@ from typing import Any, Self
 
 import matplotlib.pyplot as plt
 import numpy as np
-import polars as pl
+import pandas as pd
 from scipy import stats
 from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.tools.sm_exceptions import InterpolationWarning
@@ -80,7 +80,7 @@ def ljung_box_test(
     *,
     seasonal_period: int | None = None,
     model_df: int = 0,
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """Ljung-Box検定（帰無仮説: 指定ラグまで自己相関がない）。
 
     Args:
@@ -93,7 +93,13 @@ def ljung_box_test(
         列 `lag`, `statistic`, `p_value` の表（計算できない場合は0行）。
     """
     r = _clean(residuals)
-    empty = pl.DataFrame(schema={"lag": pl.Int64, "statistic": pl.Float64, "p_value": pl.Float64})
+    empty = pd.DataFrame(
+        {
+            "lag": pd.Series(dtype="int64"),
+            "statistic": pd.Series(dtype="float64"),
+            "p_value": pd.Series(dtype="float64"),
+        }
+    )
     if not _testable(r):
         return empty
     candidates = default_ljung_box_lags(r.size, seasonal_period) if lags is None else lags
@@ -102,7 +108,7 @@ def ljung_box_test(
     if not valid:
         return empty
     result = acorr_ljungbox(r, lags=valid, model_df=model_df)
-    return pl.DataFrame(
+    return pd.DataFrame(
         {
             "lag": valid,
             "statistic": result["lb_stat"].to_numpy(dtype=np.float64),
@@ -210,7 +216,7 @@ def residual_tests(
     regression: str = "c",
     alpha: float = 0.05,
     model_df: int = 0,
-) -> tuple[pl.DataFrame, pl.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """系列ごとに Ljung-Box・Jarque-Bera・ADF・KPSS をまとめて行う。
 
     Args:
@@ -233,7 +239,7 @@ def residual_tests(
         lb = ljung_box_test(r, lags, seasonal_period=seasonal_period, model_df=model_df)
         jb = jarque_bera_test(r)
         ur = unit_root_test(r, regression=regression, alpha=alpha)
-        lb_last = lb.row(-1, named=True) if lb.height else None
+        lb_last = lb.iloc[-1] if len(lb) else None
         lb_p = _NAN if lb_last is None else float(lb_last["p_value"])
         summaries.append(
             {
@@ -252,11 +258,13 @@ def residual_tests(
                 "stationarity": ur["conclusion"],
             }
         )
-        lb_frames.append(lb.insert_column(0, pl.Series("series", [name] * lb.height, pl.String)))
-    summary = (
-        pl.DataFrame(summaries).drop("conclusion").with_columns(pl.selectors.float().fill_nan(None))
-    )
-    return summary, pl.concat(lb_frames)
+        labeled = lb.copy()
+        labeled.insert(0, "series", pd.Series([name] * len(lb), index=lb.index, dtype="str"))
+        lb_frames.append(labeled)
+    summary = pd.DataFrame(summaries).drop(columns="conclusion")
+    # ラグは整数（計算できない系列は欠損）
+    summary["ljung_box_lag"] = summary["ljung_box_lag"].astype("Int64")
+    return summary, pd.concat(lb_frames, ignore_index=True)
 
 
 def _verdict(p_value: float, alpha: float, reject: str, keep: str) -> str:
@@ -367,13 +375,12 @@ class ResidualTimeSeriesDisplay:
         window = self.rolling_window or max(7, finite.size // 20)
         # 移動平均は区切り（foldの境目・時刻の空白）ごとに計算し、区切りをまたいで線を結ばない
         cut = np.isnan(line) & np.isfinite(r)
+        min_periods = max(1, window // 2)
         rolling = (
-            pl.DataFrame({"v": r, "block": np.cumsum(cut)})
-            .with_columns(pl.col("v").fill_nan(None))
-            .select(pl.col("v").rolling_mean(window, min_samples=max(1, window // 2)).over("block"))
-            .to_series()
-            .to_numpy()
-            .astype(np.float64)
+            pd.Series(r, dtype=np.float64)
+            .groupby(np.cumsum(cut))
+            .transform(lambda v: v.rolling(window, min_periods=min_periods).mean())
+            .to_numpy(dtype=np.float64, copy=True)
         )
         rolling[cut] = np.nan
         a.plot(t, rolling, color="#c44e52", linewidth=1.5, label=f"移動平均（{window}点）")
@@ -418,7 +425,7 @@ class TimeSeriesResidualDiagnosticsDisplay:
     figure_: plt.Figure
     ax_: dict[str, Any]
 
-    def __init__(self, tests: pl.DataFrame, ljung_box: pl.DataFrame) -> None:
+    def __init__(self, tests: pd.DataFrame, ljung_box: pd.DataFrame) -> None:
         self.tests = tests
         self.ljung_box = ljung_box
 
@@ -490,7 +497,7 @@ class TimeSeriesResidualDiagnosticsDisplay:
 
     def _plot_table(self, ax: Any, alpha: float) -> None:
         """検定結果の表を描く。"""
-        row = self.tests.row(0, named=True)
+        row = self.tests.iloc[0]
         lb_text = ", ".join(
             f"lag {k}: {_format_p(p)}"
             for k, p in zip(self.ljung_box["lag"], self.ljung_box["p_value"], strict=True)

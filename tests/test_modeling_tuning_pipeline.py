@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import polars as pl
+import pandas as pd
 import pytest
 import yaml
+from pandas_helpers import as_list, row_at
 from pydantic import ValidationError
 
 from modeling.config import load_pipeline_config
@@ -23,10 +24,10 @@ def _write_yaml(path: Path, data: dict[str, Any]) -> Path:
 
 
 @pytest.fixture
-def pipeline_dir(synthetic_frame: pl.DataFrame, tmp_path: Path) -> Path:
+def pipeline_dir(synthetic_frame: pd.DataFrame, tmp_path: Path) -> Path:
     """合成データで小さく回せるパイプライン（LightGBM を探索、linear は探索なし）。"""
     train = tmp_path / "train.parquet"
-    synthetic_frame.write_parquet(train)
+    synthetic_frame.to_parquet(train, index=False)
     root = tmp_path / "configs"
     _write_yaml(
         root / "members" / "common.yaml",
@@ -169,23 +170,23 @@ def test_run_tuning_pipeline_end_to_end(pipeline_dir: Path, tmp_path: Path) -> N
     for name in ("members.csv", "best_params.yaml", "summary.csv", "final.yaml", "pipeline.yaml"):
         assert (out / name).is_file(), name
 
-    members = pl.read_csv(out / "members.csv")
-    assert members["member"].to_list() == ["pipe_lgbm", "pipe_linear"]
-    assert members["tuned"].to_list() == [True, False]
+    members = pd.read_csv(out / "members.csv")
+    assert members["member"].pipe(as_list) == ["pipe_lgbm", "pipe_linear"]
+    assert members["tuned"].pipe(as_list) == [True, False]
     assert members["n_new_trials"][0] == 2
     # アンサンブルの構成要素は今回の実行結果（最新の実行を探さない）
     for ensemble in result.ensembles.values():
         sources = yaml.safe_load((ensemble.output_dir / "config.yaml").read_text(encoding="utf-8"))
         assert all(str(out) in s for s in sources["sources"].values())
 
-    summary = pl.read_csv(out / "summary.csv")
-    assert summary.select("kind", "name").rows() == [
+    summary = pd.read_csv(out / "summary.csv")
+    assert list(summary[["kind", "name"]].itertuples(index=False, name=None)) == [
         ("member", "pipe_lgbm"),
         ("member", "pipe_linear"),
         ("ensemble", "mean"),
         ("ensemble", "weighted"),
     ]
-    best = summary.sort("rank").row(0, named=True)
+    best = row_at(summary.sort_values("rank", kind="stable"), 0)
     final = yaml.safe_load((out / "final.yaml").read_text(encoding="utf-8"))
     assert (final["kind"], final["name"]) == (best["kind"], best["name"])
     assert final["score"] == pytest.approx(summary["rmse"].min())
@@ -226,5 +227,5 @@ def test_run_pipeline_script(pipeline_dir: Path, tmp_path: Path) -> None:
             str(tmp_path / "optuna"),
         ]
     )
-    members = pl.read_csv(next((tmp_path / "out").rglob("members.csv")))
-    assert members["tuned"].to_list() == [False, False]
+    members = pd.read_csv(next((tmp_path / "out").rglob("members.csv")))
+    assert members["tuned"].pipe(as_list) == [False, False]
