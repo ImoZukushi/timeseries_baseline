@@ -1,9 +1,10 @@
 """系列の指定と、表示範囲の切り出し・間引き・指定時刻の値。
 
 1つの系列は「ファイル・時刻列・値の列（・グループ列とその値）」で決まる。データは
-LazyFrame（`storage.open_table`）のまま扱い、必要な期間・列だけを読む。
+`storage.TableSource` から、必要な列・期間・グループの行だけを読む。
 
 時刻列が日付型の場合は日時型（マイクロ秒）にそろえる。時刻列が数値の場合は数値の横軸として扱う。
+戻り値の時刻は Python の `datetime`（数値の横軸なら `int` / `float`）にする。
 """
 
 from __future__ import annotations
@@ -12,7 +13,11 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Any
 
-import polars as pl
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+
+from timeseries_viewer.storage import Filter, TableSource
 
 TIME, VALUE = "time", "value"
 
@@ -48,54 +53,103 @@ class SeriesSpec:
         return " / ".join(parts)
 
 
-def select_series(lf: pl.LazyFrame, spec: SeriesSpec) -> pl.LazyFrame:
-    """系列の時刻・値の2列（列名 `time`, `value`）を取り出す（時刻が欠損の行は除く）。"""
-    if spec.group_col is not None and spec.group_value is not None:
-        lf = lf.filter(pl.col(spec.group_col).cast(pl.String) == spec.group_value)
-    time = pl.col(spec.time_col)
-    if lf.collect_schema()[spec.time_col] == pl.Date:
-        time = time.cast(pl.Datetime("us"))
-    return lf.select(time.alias(TIME), pl.col(spec.value_col).cast(pl.Float64).alias(VALUE)).filter(
-        pl.col(TIME).is_not_null()
+def _to_python(value: Any) -> Any:
+    """pandas・numpy のスカラーを Python の値にする（日時は `datetime`）。"""
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _is_string(dtype: pa.DataType) -> bool:
+    if pa.types.is_dictionary(dtype):
+        dtype = dtype.value_type
+    return bool(pa.types.is_string(dtype) or pa.types.is_large_string(dtype))
+
+
+def _pushdown_filters(
+    table: TableSource, spec: SeriesSpec, x_range: tuple[Any, Any] | None
+) -> list[Filter]:
+    """読む前に pyarrow に渡せる絞り込み条件（グループの値・表示範囲）。"""
+    filters: list[Filter] = []
+    if (
+        spec.group_col is not None
+        and spec.group_value is not None
+        and _is_string(table.column_type(spec.group_col))
+    ):
+        filters.append((spec.group_col, "==", spec.group_value))
+    time_type = table.column_type(spec.time_col)
+    if x_range is not None and (
+        pa.types.is_timestamp(time_type)
+        or pa.types.is_integer(time_type)
+        or pa.types.is_floating(time_type)
+    ):
+        filters += [(spec.time_col, ">=", x_range[0]), (spec.time_col, "<=", x_range[1])]
+    return filters
+
+
+def select_series(
+    table: TableSource, spec: SeriesSpec, x_range: tuple[Any, Any] | None = None
+) -> pd.DataFrame:
+    """系列の時刻・値の2列（列名 `time`, `value`）を取り出す（時刻が欠損の行は除く）。
+
+    Args:
+        table: ファイルの `TableSource`。
+        spec: 系列の指定。
+        x_range: 表示範囲（両端を含む）。Noneなら全期間。
+
+    Returns:
+        列 `time`, `value` の DataFrame（行の並びはファイルのまま）。
+    """
+    columns = [spec.time_col, spec.value_col]
+    grouped = spec.group_col is not None and spec.group_value is not None
+    if grouped:
+        assert spec.group_col is not None
+        columns.append(spec.group_col)
+    frame = table.read(columns, _pushdown_filters(table, spec, x_range))
+    if grouped:
+        # グループの値は文字列として比べる（欠損の行は選ばない）
+        group = frame[spec.group_col]
+        frame = frame[group.notna() & (group.astype(str) == spec.group_value)]
+    time = frame[spec.time_col]
+    if not (pd.api.types.is_numeric_dtype(time) or pd.api.types.is_datetime64_any_dtype(time)):
+        # 日付型（Parquet の date32 は Python の date の列になる）は日時（マイクロ秒）にそろえる
+        time = pd.to_datetime(time).astype("datetime64[us]")
+    data = pd.DataFrame(
+        {TIME: time.to_numpy(), VALUE: frame[spec.value_col].astype("float64").to_numpy()}
     )
+    data = data[data[TIME].notna()]
+    if x_range is not None:
+        data = data[(data[TIME] >= x_range[0]) & (data[TIME] <= x_range[1])]
+    return data.reset_index(drop=True)
 
 
-def _in_range(lf: pl.LazyFrame, x_range: tuple[Any, Any] | None) -> pl.LazyFrame:
-    if x_range is None:
-        return lf
-    return lf.filter(pl.col(TIME).is_between(x_range[0], x_range[1]))
-
-
-def time_bounds(lf: pl.LazyFrame, spec: SeriesSpec) -> tuple[Any, Any] | None:
+def time_bounds(table: TableSource, spec: SeriesSpec) -> tuple[Any, Any] | None:
     """系列の時刻の最小・最大（データが無ければNone）。"""
-    row = (
-        select_series(lf, spec)
-        .select(pl.col(TIME).min().alias("min"), pl.col(TIME).max().alias("max"))
-        .collect()
-        .row(0)
-    )
-    return None if row[0] is None else (row[0], row[1])
+    times = select_series(table, spec)[TIME]
+    if times.empty:
+        return None
+    return _to_python(times.min()), _to_python(times.max())
 
 
 def value_range(
-    lf: pl.LazyFrame, spec: SeriesSpec, x_range: tuple[Any, Any] | None = None
+    table: TableSource, spec: SeriesSpec, x_range: tuple[Any, Any] | None = None
 ) -> tuple[float, float] | None:
     """表示範囲内の値の最小・最大（有限の値が無ければNone）。"""
-    values = _in_range(select_series(lf, spec), x_range).filter(pl.col(VALUE).is_finite())
-    row = (
-        values.select(pl.col(VALUE).min().alias("min"), pl.col(VALUE).max().alias("max"))
-        .collect()
-        .row(0)
-    )
-    return None if row[0] is None else (float(row[0]), float(row[1]))
+    values = select_series(table, spec, x_range)[VALUE].to_numpy()
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    return float(values.min()), float(values.max())
 
 
 def load_series(
-    lf: pl.LazyFrame,
+    table: TableSource,
     spec: SeriesSpec,
     x_range: tuple[Any, Any] | None = None,
     max_points: int | None = 5000,
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     """表示範囲の系列を時刻順に取り出す（点が多ければ間引く）。
 
     間引きは、時刻順に並べた点を `max_points // 2` 個の区間に分け、各区間の最小値と最大値の
@@ -103,7 +157,7 @@ def load_series(
     間引く場合、値が欠損の点は除く（線の途切れは図の側で時刻の空白から判断する）。
 
     Args:
-        lf: ファイルの LazyFrame。
+        table: ファイルの `TableSource`。
         spec: 系列の指定。
         x_range: 表示範囲（両端を含む）。Noneなら全期間。
         max_points: 最大の点数（Noneなら間引かない）。
@@ -111,52 +165,36 @@ def load_series(
     Returns:
         列 `time`, `value` の DataFrame。
     """
-    data = _in_range(select_series(lf, spec), x_range).sort(TIME)
-    n = data.select(pl.len()).collect().item()
-    if max_points is None or n <= max_points:
-        return data.collect()
+    data = select_series(table, spec, x_range).sort_values(TIME, kind="stable")
+    data = data.reset_index(drop=True)
+    if max_points is None or len(data) <= max_points:
+        return data
     n_buckets = max(1, max_points // 2)
-    valid = data.filter(pl.col(VALUE).is_finite()).with_row_index("__i")
-    n_valid = valid.select(pl.len()).collect().item()
+    valid = data[np.isfinite(data[VALUE].to_numpy())].reset_index(drop=True)
+    n_valid = len(valid)
     if n_valid == 0:
-        return pl.DataFrame(schema=data.collect_schema())
-    # 行番号は u32 のため、掛け算のあふれを避けて Int64 で計算する
-    bucketed = valid.with_columns(
-        (pl.col("__i").cast(pl.Int64) * n_buckets // n_valid).alias("__b")
-    )
-    # 各区間の最小値・最大値の点（行番号）を求め、その行だけを残す
-    extremes = bucketed.group_by("__b").agg(
-        pl.col("__i").get(pl.col(VALUE).arg_min()).alias("__min"),
-        pl.col("__i").get(pl.col(VALUE).arg_max()).alias("__max"),
-    )
-    keep = pl.concat(
-        [
-            extremes.select(pl.col("__min").alias("__i")),
-            extremes.select(pl.col("__max").alias("__i")),
-        ]
-    ).unique()
-    return valid.join(keep, on="__i", how="semi").sort("__i").select(TIME, VALUE).collect()
+        return valid
+    # 各区間の最小値・最大値の点（行番号。同じ値なら先の行）だけを残す
+    bucket = np.arange(n_valid, dtype=np.int64) * n_buckets // n_valid
+    by_bucket = valid[VALUE].groupby(bucket)
+    keep = np.union1d(by_bucket.idxmin().to_numpy(), by_bucket.idxmax().to_numpy())
+    return valid.loc[keep, [TIME, VALUE]].reset_index(drop=True)
 
 
-def value_at(lf: pl.LazyFrame, spec: SeriesSpec, t: Any) -> tuple[Any, float] | None:
+def value_at(table: TableSource, spec: SeriesSpec, t: Any) -> tuple[Any, float] | None:
     """時刻 t に最も近い観測（値が欠損でない点）の (時刻, 値)。間引く前のデータから求める。
 
     前後の観測が同じだけ離れている場合は前の観測を返す。データが無ければNone。
     """
-    data = select_series(lf, spec).filter(pl.col(VALUE).is_not_null())
-    before, after = (
-        data.select(
-            pl.col(TIME).filter(pl.col(TIME) <= t).max().alias("before"),
-            pl.col(TIME).filter(pl.col(TIME) >= t).min().alias("after"),
-        )
-        .collect()
-        .row(0)
-    )
-    candidates = [x for x in (before, after) if x is not None]
+    data = select_series(table, spec)
+    data = data[data[VALUE].notna()]
+    before = data.loc[data[TIME] <= t, TIME].max()
+    after = data.loc[data[TIME] >= t, TIME].min()
+    candidates = [_to_python(x) for x in (before, after) if not pd.isna(x)]
     if not candidates:
         return None
     nearest = min(candidates, key=lambda x: abs(x - t))
-    value = data.filter(pl.col(TIME) == nearest).select(pl.col(VALUE).first()).collect().item()
+    value = data.loc[data[TIME] == nearest, VALUE].iloc[0]
     return nearest, float(value)
 
 

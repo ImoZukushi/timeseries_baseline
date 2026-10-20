@@ -6,9 +6,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import polars as pl
+import pyarrow as pa
 
-from timeseries_viewer.storage import SUPPORTED_SUFFIXES
+from timeseries_viewer.storage import SUPPORTED_SUFFIXES, TableSource
 
 # グループ列（系列ID・地点名など）とみなす文字列列の最大の種類数
 MAX_GROUP_VALUES = 500
@@ -78,37 +78,49 @@ class ColumnInfo:
     default_group: str | None
 
 
-def inspect_columns(lf: pl.LazyFrame) -> ColumnInfo:
-    """LazyFrame の列の種類を調べる。
+def _is_string(dtype: pa.DataType) -> bool:
+    """文字列の列か（カテゴリ（辞書型）の文字列も含む）。"""
+    if pa.types.is_dictionary(dtype):
+        dtype = dtype.value_type
+    return bool(pa.types.is_string(dtype) or pa.types.is_large_string(dtype))
+
+
+def _is_numeric(dtype: pa.DataType) -> bool:
+    """数値の列か（真偽値は含めない）。"""
+    return bool(
+        pa.types.is_integer(dtype) or pa.types.is_floating(dtype) or pa.types.is_decimal(dtype)
+    )
+
+
+def inspect_columns(table: TableSource) -> ColumnInfo:
+    """ファイルの列の種類を調べる。
 
     既定のグループ列の判定は `eda.time_series_eda.find_grouping_column` と同じ考え方
-    （時刻列に重複があり、時刻と組み合わせると一意になる列）を、大容量のデータでも
-    全行をメモリに載せずに行う。
+    （時刻列に重複があり、時刻と組み合わせると一意になる列）で行う。読むのは時刻列と
+    文字列の列だけにする。
     """
-    schema = lf.collect_schema()
-    datetimes = [c for c, t in schema.items() if t in (pl.Datetime, pl.Date)]
-    numeric = [c for c, t in schema.items() if t.is_numeric()]
-    strings = [c for c, t in schema.items() if t in (pl.String, pl.Categorical)]
+    types = {field.name: field.type for field in table.schema}
+    datetimes = [c for c, t in types.items() if pa.types.is_timestamp(t) or pa.types.is_date(t)]
+    numeric = [c for c, t in types.items() if _is_numeric(t)]
+    strings = [c for c, t in types.items() if _is_string(t)]
     time_columns = datetimes or numeric
     group_columns: list[str] = []
     if strings:
-        counts = lf.select(pl.col(c).n_unique() for c in strings).collect().row(0)
-        group_columns = [c for c, n in zip(strings, counts, strict=True) if n <= MAX_GROUP_VALUES]
+        # 欠損も1つの値として数える
+        counts = table.read(strings).nunique(dropna=False)
+        group_columns = [c for c in strings if counts[c] <= MAX_GROUP_VALUES]
     default_group = None
     if datetimes and group_columns:
         time_col = datetimes[0]
-        stats = lf.select(
-            pl.len().alias("__rows"),
-            pl.col(time_col).n_unique().alias("__time"),
-            *[pl.struct(time_col, c).n_unique().alias(c) for c in group_columns],
-        ).collect()
-        rows = stats["__rows"][0]
-        if stats["__time"][0] < rows:
-            default_group = next((c for c in group_columns if stats[c][0] == rows), None)
+        frame = table.read([time_col, *group_columns])
+        if frame[time_col].nunique(dropna=False) < len(frame):
+            default_group = next(
+                (c for c in group_columns if not frame[[time_col, c]].duplicated().any()), None
+            )
     return ColumnInfo(time_columns, numeric, group_columns, default_group)
 
 
-def group_values(lf: pl.LazyFrame, group_col: str) -> list[str]:
+def group_values(table: TableSource, group_col: str) -> list[str]:
     """グループ列の値の一覧（欠損を除き、文字列にして昇順）。"""
-    values = lf.select(pl.col(group_col).drop_nulls().unique()).collect().to_series()
-    return sorted(str(v) for v in values.to_list())
+    values = table.read([group_col])[group_col].dropna().unique()
+    return sorted(str(v) for v in values)

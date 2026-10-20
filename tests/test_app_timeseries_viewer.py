@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import os
 import time
 from pathlib import Path
 
 import numpy as np
-import polars as pl
+import pandas as pd
 import pytest
+import timeseries_viewer.storage as storage
 from timeseries_viewer.catalog import discover_files, group_values, inspect_columns
 from timeseries_viewer.figure import SeriesView, build_figure
 from timeseries_viewer.series import (
@@ -20,7 +22,7 @@ from timeseries_viewer.series import (
     value_at,
     value_range,
 )
-from timeseries_viewer.storage import cache_paths, open_table
+from timeseries_viewer.storage import TableSource, cache_paths, open_table
 
 import util.csv_io as csv_io
 
@@ -60,17 +62,17 @@ def test_discover_files(tmp_path: Path) -> None:
 def test_open_table_caches_csv_and_rebuilds_on_change(tmp_path: Path, panel_csv: Path) -> None:
     cache = tmp_path / "cache"
     original = panel_csv.read_bytes()
-    lf = open_table(panel_csv, cache)
+    source = open_table(panel_csv, cache)
     parquet, meta = cache_paths(panel_csv, cache)
     assert parquet.is_file() and meta.is_file()
-    frame = lf.collect()
-    assert frame.schema["年月日時"] == pl.Datetime
-    assert frame.height == 96
+    frame = source.read(source.columns)
+    assert pd.api.types.is_datetime64_any_dtype(frame["年月日時"])
+    assert len(frame) == 96
     # 欠測記号 * は欠損として読み込む
-    assert frame["気温(℃)"].null_count() == 1
+    assert frame["気温(℃)"].isna().sum() == 1
     # 2回目はキャッシュを使う（作り直さない）
     built = parquet.stat().st_mtime_ns
-    open_table(panel_csv, cache).collect()
+    open_table(panel_csv, cache)
     assert parquet.stat().st_mtime_ns == built
     # 元ファイルは変更しない
     assert panel_csv.read_bytes() == original
@@ -78,46 +80,67 @@ def test_open_table_caches_csv_and_rebuilds_on_change(tmp_path: Path, panel_csv:
     time.sleep(0.01)
     _write_cp932(panel_csv, "年月日時,地点,気温(℃)\n2016/1/1 0:00,富山,1\n")
     os.utime(panel_csv, ns=(time.time_ns(), time.time_ns()))
-    assert open_table(panel_csv, cache).collect().height == 1
+    source = open_table(panel_csv, cache)
+    assert len(source.read(source.columns)) == 1
 
 
 def test_open_table_reads_parquet_directly(tmp_path: Path) -> None:
     path = tmp_path / "x.parquet"
-    pl.DataFrame({"t": [1, 2], "v": [0.5, 1.5]}).write_parquet(path)
-    assert open_table(path, tmp_path / "cache").collect()["v"].to_list() == [0.5, 1.5]
+    pd.DataFrame({"t": [1, 2], "v": [0.5, 1.5]}).to_parquet(path, index=False)
+    assert open_table(path, tmp_path / "cache").read(["v"])["v"].tolist() == [0.5, 1.5]
     assert not (tmp_path / "cache").exists()
 
 
-def test_scan_csv_auto_large_file_matches_read_csv_auto(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _wind_csv(tmp_path: Path) -> Path:
     lines = ["年月日時,風速(瞬時),風向(瞬時)"]
     for s in range(200):
         t = dt.datetime(2016, 1, 1) + dt.timedelta(seconds=s)
         lines.append(f"{t:%Y-%m-%d %H:%M:%S},{'*' if s == 3 else s / 10},{s % 360}")
-    path = _write_cp932(tmp_path / "wind.csv", "\n".join(lines) + "\n")
-    # 大容量ファイルの扱い（ヘッダ以外ASCIIなら lazy scan）を小さなファイルで再現する
+    return _write_cp932(tmp_path / "wind.csv", "\n".join(lines) + "\n")
+
+
+def test_iter_csv_chunks_large_file_matches_read_csv_auto(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _wind_csv(tmp_path)
+    # 大容量ファイルの扱い（ヘッダ以外ASCIIなら塊ごとに読む）を小さなファイルで再現する
     monkeypatch.setattr(csv_io, "LARGE_FILE_THRESHOLD_BYTES", 100)
-    lazy = csv_io.scan_csv_auto(path, datetime_sample_rows=50).collect()
-    eager = csv_io.read_csv_auto(path)
-    assert lazy.equals(eager)
-    assert lazy.schema["年月日時"] == pl.Datetime
-    assert lazy["風速(瞬時)"].null_count() == 1
+    chunks = list(csv_io.iter_csv_chunks(path, chunksize=30, datetime_sample_rows=50))
+    assert len(chunks) == 7
+    chunked = pd.concat(chunks, ignore_index=True)
+    # 塊ごとに読む場合、数値の列は（後の塊の欠損に備えて）float64 になる
+    pd.testing.assert_frame_equal(chunked, csv_io.read_csv_auto(path), check_dtype=False)
+    assert pd.api.types.is_datetime64_any_dtype(chunked["年月日時"])
+    assert chunked["風速(瞬時)"].isna().sum() == 1
+
+
+def test_open_table_builds_cache_from_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _wind_csv(tmp_path)
+    monkeypatch.setattr(csv_io, "LARGE_FILE_THRESHOLD_BYTES", 100)
+    # 塊ごとに Parquet へ追記しても、まとめて読んだ結果と同じになる
+    monkeypatch.setattr(
+        storage, "iter_csv_chunks", functools.partial(csv_io.iter_csv_chunks, chunksize=30)
+    )
+    source = open_table(path, tmp_path / "cache")
+    expected = csv_io.read_csv_auto(path)
+    pd.testing.assert_frame_equal(source.read(source.columns), expected, check_dtype=False)
 
 
 def test_inspect_columns_finds_group_column(tmp_path: Path, panel_csv: Path) -> None:
-    lf = open_table(panel_csv, tmp_path / "cache")
-    info = inspect_columns(lf)
+    source = open_table(panel_csv, tmp_path / "cache")
+    info = inspect_columns(source)
     assert info.time_columns == ["年月日時"]
     assert info.value_columns == ["気温(℃)"]
     assert info.group_columns == ["地点"]
     assert info.default_group == "地点"
-    assert group_values(lf, "地点") == ["富山", "金沢"]
+    assert group_values(source, "地点") == ["富山", "金沢"]
 
 
 def test_inspect_columns_numeric_time_axis() -> None:
-    lf = pl.LazyFrame({"step": [1, 2, 3], "y": [0.1, 0.2, 0.3], "id": ["a", "a", "a"]})
-    info = inspect_columns(lf)
+    source = _source({"step": [1, 2, 3], "y": [0.1, 0.2, 0.3], "id": ["a", "a", "a"]})
+    info = inspect_columns(source)
     assert info.time_columns == ["step", "y"]
     # 時刻列（日時型）が無い場合はグループ列の既定を決めない
     assert info.default_group is None
@@ -126,60 +149,81 @@ def test_inspect_columns_numeric_time_axis() -> None:
 # --- 系列 ------------------------------------------------------------------------------------
 
 
-def _hourly(n: int = 1000) -> pl.LazyFrame:
-    times = [dt.datetime(2020, 1, 1) + dt.timedelta(hours=i) for i in range(n)]
+def _source(data: dict[str, object]) -> TableSource:
+    """メモリ上のデータを `TableSource` にする。"""
+    return TableSource.from_frame(pd.DataFrame(data))
+
+
+def _hourly(n: int = 1000) -> TableSource:
+    times = pd.date_range(dt.datetime(2020, 1, 1), periods=n, freq="h", unit="us")
     values = np.sin(np.arange(n) / 10.0)
     values[n // 2] = 100.0  # 間引いても残るべきピーク
-    return pl.LazyFrame({"t": times, "v": values, "g": ["a"] * n})
+    return _source({"t": times, "v": values, "g": ["a"] * n})
 
 
 def test_load_series_filters_range_and_group(tmp_path: Path, panel_csv: Path) -> None:
-    lf = open_table(panel_csv, tmp_path / "cache")
+    source = open_table(panel_csv, tmp_path / "cache")
     spec = SeriesSpec("weather.csv", "年月日時", "気温(℃)", "地点", "金沢")
-    data = load_series(lf, spec, (dt.datetime(2016, 1, 1, 10), dt.datetime(2016, 1, 1, 12)))
-    assert data.columns == ["time", "value"]
-    assert data["value"].to_list() == [-10.0, -11.0, -12.0]
+    data = load_series(source, spec, (dt.datetime(2016, 1, 1, 10), dt.datetime(2016, 1, 1, 12)))
+    assert list(data.columns) == ["time", "value"]
+    assert data["value"].tolist() == [-10.0, -11.0, -12.0]
     assert spec.label == "weather.csv / 気温(℃) / 地点=金沢"
-    assert time_bounds(lf, spec) == (dt.datetime(2016, 1, 1), dt.datetime(2016, 1, 2, 23))
-    assert value_range(lf, spec) == (-47.0, 0.0)
+    bounds = time_bounds(source, spec)
+    assert bounds == (dt.datetime(2016, 1, 1), dt.datetime(2016, 1, 2, 23))
+    assert bounds is not None and type(bounds[0]) is dt.datetime
+    assert value_range(source, spec) == (-47.0, 0.0)
 
 
 def test_load_series_downsamples_keeping_extremes() -> None:
-    lf = _hourly()
+    source = _hourly()
     spec = SeriesSpec("x", "t", "v")
-    data = load_series(lf, spec, max_points=100)
-    assert data.height <= 100
-    assert data["time"].is_sorted()
+    data = load_series(source, spec, max_points=100)
+    assert len(data) <= 100
+    assert data["time"].is_monotonic_increasing
     assert data["value"].max() == 100.0
-    assert data["value"].min() == pytest.approx(lf.collect()["v"].min())
+    assert data["value"].min() == pytest.approx(source.read(["v"])["v"].min())
     # 上限以下なら間引かない
-    assert load_series(lf, spec, max_points=None).height == 1000
+    assert len(load_series(source, spec, max_points=None)) == 1000
 
 
 def test_load_series_date_column_becomes_datetime() -> None:
-    lf = pl.LazyFrame({"d": [dt.date(2020, 1, 1), dt.date(2020, 1, 2)], "v": [1, 2]})
-    data = load_series(lf, SeriesSpec("x", "d", "v"))
-    assert data.schema["time"] == pl.Datetime("us")
-    assert data.schema["value"] == pl.Float64
+    source = _source({"d": [dt.date(2020, 1, 1), dt.date(2020, 1, 2)], "v": [1, 2]})
+    data = load_series(source, SeriesSpec("x", "d", "v"))
+    assert str(data["time"].dtype) == "datetime64[us]"
+    assert str(data["value"].dtype) == "float64"
+
+
+def test_load_series_date_column_in_parquet(tmp_path: Path) -> None:
+    # Parquet の日付型（date32）の列も、表示範囲で絞り込める
+    path = tmp_path / "d.parquet"
+    days = [dt.date(2020, 1, d) for d in (1, 2, 3)]
+    pd.DataFrame({"d": days, "v": [1.0, 2.0, 3.0]}).to_parquet(path, index=False)
+    source = open_table(path)
+    x_range = (dt.datetime(2020, 1, 2), dt.datetime(2020, 1, 3))
+    assert load_series(source, SeriesSpec("x", "d", "v"), x_range)["value"].tolist() == [2.0, 3.0]
 
 
 def test_value_at_returns_nearest_observation() -> None:
-    lf = pl.LazyFrame(
+    source = _source(
         {
             "t": [dt.datetime(2020, 1, 1, h) for h in (0, 1, 2, 4)],
             "v": [0.0, 1.0, None, 4.0],
         }
     )
     spec = SeriesSpec("x", "t", "v")
-    assert value_at(lf, spec, dt.datetime(2020, 1, 1, 0, 20)) == (dt.datetime(2020, 1, 1, 0), 0.0)
-    assert value_at(lf, spec, dt.datetime(2020, 1, 1, 0, 40)) == (dt.datetime(2020, 1, 1, 1), 1.0)
-    # 欠損の観測（2時）は飛ばして、値のある最も近い観測を返す
-    assert value_at(lf, spec, dt.datetime(2020, 1, 1, 2)) == (dt.datetime(2020, 1, 1, 1), 1.0)
-    # 範囲外でも端の観測を返す
-    assert value_at(lf, spec, dt.datetime(2030, 1, 1)) == (dt.datetime(2020, 1, 1, 4), 4.0)
-    empty = pl.LazyFrame(
-        {"t": [dt.datetime(2020, 1, 1)], "v": [None]}, schema={"t": pl.Datetime, "v": pl.Float64}
+    assert value_at(source, spec, dt.datetime(2020, 1, 1, 0, 20)) == (
+        dt.datetime(2020, 1, 1, 0),
+        0.0,
     )
+    assert value_at(source, spec, dt.datetime(2020, 1, 1, 0, 40)) == (
+        dt.datetime(2020, 1, 1, 1),
+        1.0,
+    )
+    # 欠損の観測（2時）は飛ばして、値のある最も近い観測を返す
+    assert value_at(source, spec, dt.datetime(2020, 1, 1, 2)) == (dt.datetime(2020, 1, 1, 1), 1.0)
+    # 範囲外でも端の観測を返す
+    assert value_at(source, spec, dt.datetime(2030, 1, 1)) == (dt.datetime(2020, 1, 1, 4), 4.0)
+    empty = _source({"t": [dt.datetime(2020, 1, 1)], "v": pd.Series([None], dtype="float64")})
     assert value_at(empty, spec, dt.datetime(2020, 1, 1)) is None
 
 
@@ -195,15 +239,15 @@ def test_parse_axis_value() -> None:
 
 
 def test_build_figure_rows_cursor_and_axes() -> None:
-    lf = _hourly(200)
+    source = _hourly(200)
     spec = SeriesSpec("x", "t", "v")
-    data = load_series(lf, spec)
+    data = load_series(source, spec)
     cursor = dt.datetime(2020, 1, 3)
     views = [
-        SeriesView("a", data, cursor_point=value_at(lf, spec, cursor)),
+        SeriesView("a", data, cursor_point=value_at(source, spec, cursor)),
         SeriesView("b", data, y_range=(-2.0, 2.0)),
         SeriesView(
-            "c", data.with_columns(pl.col("value").abs() + 1), y_range=(1.0, 100.0), log_y=True
+            "c", data.assign(value=data["value"].abs() + 1), y_range=(1.0, 100.0), log_y=True
         ),
     ]
     x_range = (dt.datetime(2020, 1, 2), dt.datetime(2020, 1, 5))

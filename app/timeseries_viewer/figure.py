@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
-import polars as pl
 from plotly.subplots import make_subplots
 
 from eda.time_series_eda import break_line_at_gaps
@@ -33,16 +33,16 @@ class SeriesView:
     """
 
     label: str
-    data: pl.DataFrame
+    data: pd.DataFrame
     y_range: tuple[float, float] | None = None
     log_y: bool = False
     cursor_point: tuple[Any, float] | None = None
 
 
-def _line_xy(data: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+def _line_xy(data: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """折れ線の座標（時刻の大きな空白では線を切る）。"""
     x = data[TIME].to_numpy()
-    y = data[VALUE].to_numpy().astype(np.float64)
+    y = data[VALUE].to_numpy(dtype=np.float64)
     return x, break_line_at_gaps(x, y)
 
 

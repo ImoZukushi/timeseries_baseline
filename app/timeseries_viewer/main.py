@@ -27,7 +27,7 @@ import datetime as dt  # noqa: E402
 import os  # noqa: E402
 from typing import Any  # noqa: E402
 
-import polars as pl  # noqa: E402
+import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from timeseries_viewer.catalog import (  # noqa: E402
@@ -46,7 +46,7 @@ from timeseries_viewer.series import (  # noqa: E402
     value_at,
     value_range,
 )
-from timeseries_viewer.storage import default_cache_dir, open_table  # noqa: E402
+from timeseries_viewer.storage import TableSource, default_cache_dir, open_table  # noqa: E402
 from util.paths import data_dir, outputs_dir  # noqa: E402
 
 MAX_SERIES = 5
@@ -77,11 +77,11 @@ def _files(roots: tuple[str, ...], cache_dir: str) -> list[DataFile]:
 
 
 @st.cache_resource(show_spinner=False)
-def _table(path: str, mtime_ns: int, cache_dir: str) -> pl.LazyFrame:
+def _table(path: str, mtime_ns: int, cache_dir: str) -> TableSource:
     return open_table(Path(path), Path(cache_dir))
 
 
-def _lf(file: DataFile) -> pl.LazyFrame:
+def _source(file: DataFile) -> TableSource:
     return _table(str(file.path), file.path.stat().st_mtime_ns, _cache_dir())
 
 
@@ -107,7 +107,7 @@ def _bounds(key: tuple[str, int, str], spec: SeriesSpec) -> tuple[Any, Any] | No
 @st.cache_data(show_spinner=False)
 def _values(
     key: tuple[str, int, str], spec: SeriesSpec, x_range: tuple[Any, Any], max_points: int
-) -> pl.DataFrame:
+) -> pd.DataFrame:
     return load_series(_table(*key), spec, x_range, max_points)
 
 
@@ -369,7 +369,7 @@ def main() -> None:
     )
     if cursor is not None:
         st.subheader(f"カーソル {cursor} での値")
-        st.dataframe(pl.DataFrame(nearest_rows), hide_index=True, width="stretch")
+        st.dataframe(pd.DataFrame(nearest_rows), hide_index=True, width="stretch")
     st.caption(
         "点をクリックするとカーソル（赤の破線）を移動します。マウスを乗せると、その時刻の全系列の値が"
         "表示されます。点数が多い期間は区間ごとの最小・最大に間引いて描いています（カーソルの値は"
