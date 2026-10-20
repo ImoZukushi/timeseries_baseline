@@ -25,17 +25,14 @@ from collections.abc import Sequence
 from typing import Any, Literal, Self
 
 import numpy as np
-import polars as pl
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.utils.validation import check_is_fitted
 
-from feature_engineering._polars_sklearn import as_variable_list
+from feature_engineering._pandas_sklearn import as_variable_list, replace_columns
 from feature_engineering.numeric import LogTransformer
 
 SERIES_TRANSFORM_KINDS = ("log", "diff", "log_diff", "seasonal_diff", "log_seasonal_diff")
-
-# 行の元の並びを保持するための一時列
-_ROW = "__row__"
 
 GroupKey = tuple[Any, ...]
 
@@ -44,7 +41,7 @@ class DifferenceTransformer(BaseEstimator, TransformerMixin):
     """差分・対数差分・季節差分・対数季節差分の変換と逆変換。
 
     変換は `d_t = b_t - b_{t-periods}`（`b = log(x + offset)`（`log=True`）または `x`）。
-    各系列の先頭 `periods` 行は、前の値が無いためnullになる。
+    各系列の先頭 `periods` 行は、前の値が無いため欠損（NaN）になる。
 
     逆変換は `b_t = d_t + b_{t-periods}` を累積して元の値に戻す。そのために直前 `periods` 期の
     元の値（起点）が必要で、`fit` 時に各系列の先頭・末尾 `periods` 個の値を記録しておく。
@@ -54,11 +51,11 @@ class DifferenceTransformer(BaseEstimator, TransformerMixin):
       `sklearn.pipeline.Pipeline.inverse_transform` から呼ばれるのはこの形。
     - `"fit"`: fitしたデータの末尾の値を起点にし、**fitしたデータの直後の期間**
       （予測値など）を復元する。
-    - `pl.DataFrame`: 渡した過去データ（元の尺度）の末尾 `periods` 行を起点にし、
+    - `pd.DataFrame`: 渡した過去データ（元の尺度）の末尾 `periods` 行を起点にし、
       その直後の期間を復元する。
 
-    差分の途中にnull（元データの欠損）があると、それ以降の同じ位相
-    （`periods` 期おきの値）は復元できずnullになる。これは差分表現の原理的な限界である。
+    差分の途中に欠損（元データの欠損）があると、それ以降の同じ位相
+    （`periods` 期おきの値）は復元できず欠損になる。これは差分表現の原理的な限界である。
 
     Args:
         variables: 対象カラム名。
@@ -74,14 +71,14 @@ class DifferenceTransformer(BaseEstimator, TransformerMixin):
         tail_: 各系列の末尾 `periods` 行の元の値（系列IDの列 + 対象列）。
 
     Examples:
-        >>> import polars as pl
-        >>> X = pl.DataFrame({"x": [1.0, 3.0, 6.0, 10.0]})
+        >>> import pandas as pd
+        >>> X = pd.DataFrame({"x": [1.0, 3.0, 6.0, 10.0]})
         >>> t = DifferenceTransformer("x").fit(X)
-        >>> t.transform(X)["x"].to_list()
-        [None, 2.0, 3.0, 4.0]
-        >>> t.inverse_transform(t.transform(X))["x"].to_list()
+        >>> t.transform(X)["x"].tolist()
+        [nan, 2.0, 3.0, 4.0]
+        >>> t.inverse_transform(t.transform(X))["x"].tolist()
         [1.0, 3.0, 6.0, 10.0]
-        >>> t.inverse_transform(pl.DataFrame({"x": [5.0, 5.0]}), history="fit")["x"].to_list()
+        >>> t.inverse_transform(pd.DataFrame({"x": [5.0, 5.0]}), history="fit")["x"].tolist()
         [15.0, 20.0]
     """
 
@@ -101,7 +98,7 @@ class DifferenceTransformer(BaseEstimator, TransformerMixin):
 
     # --- 学習 -------------------------------------------------------------------------
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象列を確定し、逆変換の起点になる各系列の先頭・末尾の値を記録する。
 
         Raises:
@@ -113,53 +110,58 @@ class DifferenceTransformer(BaseEstimator, TransformerMixin):
         self.variables_ = as_variable_list(self.variables)
         self.group_keys_ = [] if self.group_by is None else as_variable_list(self.group_by)
         if self.log:
-            # 黙ってnullにすると差分・逆変換が壊れるため、学習データでは明示的にエラーにする
+            # 黙って欠損にすると差分・逆変換が壊れるため、学習データでは明示的にエラーにする
             for col in self.variables_:
-                n_bad = X.filter(pl.col(col) + self.offset <= 0).height
+                n_bad = int((X[col].astype(float) + self.offset <= 0).sum())
                 if n_bad:
                     raise ValueError(
                         f"{col} に log を取れない値（x + offset <= 0）が {n_bad} 件あります。"
                         " offset を指定してください"
                     )
         columns = [*self.group_keys_, *self.variables_]
-        self.head_ = self._per_series(X.select(columns), "head")
-        self.tail_ = self._per_series(X.select(columns), "tail")
+        self.head_ = self._per_series(X[columns], "head")
+        self.tail_ = self._per_series(X[columns], "tail")
         return self
 
-    def _per_series(self, frame: pl.DataFrame, which: Literal["head", "tail"]) -> pl.DataFrame:
-        """系列ごとの先頭または末尾 `periods` 行を取り出す。"""
+    def _per_series(self, frame: pd.DataFrame, which: Literal["head", "tail"]) -> pd.DataFrame:
+        """系列ごとの先頭または末尾 `periods` 行を取り出す（行の並びは元のまま）。"""
         if not self.group_keys_:
-            return frame.head(self.periods) if which == "head" else frame.tail(self.periods)
-        grouped = frame.group_by(self.group_keys_, maintain_order=True)
-        return grouped.head(self.periods) if which == "head" else grouped.tail(self.periods)
+            part = frame.head(self.periods) if which == "head" else frame.tail(self.periods)
+            return part.reset_index(drop=True)
+        grouped = frame.groupby(self.group_keys_, sort=False, dropna=False)
+        part = grouped.head(self.periods) if which == "head" else grouped.tail(self.periods)
+        return part.reset_index(drop=True)
 
     # --- 変換 -------------------------------------------------------------------------
 
-    def _to_base(self, expr: pl.Expr) -> pl.Expr:
+    def _to_base(self, values: pd.Series) -> pd.Series:
         """差分を取る前の値（`log(x + offset)` または `x`）にする。"""
-        expr = expr.cast(pl.Float64)
+        values = values.astype(float)
         if not self.log:
-            return expr
-        shifted = expr + self.offset
-        return pl.when(shifted > 0).then(shifted.log()).otherwise(None)
+            return values
+        shifted = values + self.offset
+        positive = shifted.where(shifted > 0).to_numpy()
+        return pd.Series(np.log(positive), index=values.index, name=values.name)
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """差分（`log=True` なら対数差分）を取り、対象列を置き換える。"""
         check_is_fitted(self)
-        exprs = []
+        values = {}
         for col in self.variables_:
-            base = self._to_base(pl.col(col))
-            lagged = base.shift(self.periods)
+            base = self._to_base(X[col])
             if self.group_keys_:
-                lagged = lagged.over(self.group_keys_)
-            exprs.append((base - lagged).alias(col))
-        return X.with_columns(exprs)
+                keys = [X[k] for k in self.group_keys_]
+                lagged = base.groupby(keys, sort=False, dropna=False).shift(self.periods)
+            else:
+                lagged = base.shift(self.periods)
+            values[col] = base - lagged
+        return replace_columns(X, values)
 
     # --- 逆変換 ------------------------------------------------------------------------
 
     def inverse_transform(
-        self, X: pl.DataFrame, history: pl.DataFrame | Literal["fit"] | None = None
-    ) -> pl.DataFrame:
+        self, X: pd.DataFrame, history: pd.DataFrame | Literal["fit"] | None = None
+    ) -> pd.DataFrame:
         """差分系列を元の系列に戻し、対象列を置き換える。
 
         Args:
@@ -185,58 +187,58 @@ class DifferenceTransformer(BaseEstimator, TransformerMixin):
             anchors, continues = self.tail_, True
         else:
             columns = [*self.group_keys_, *self.variables_]
-            anchors, continues = self._per_series(history.select(columns), "tail"), True
+            anchors, continues = self._per_series(history[columns], "tail"), True
 
         anchor_map = self._anchor_map(anchors)
-        restored = {col: np.full(X.height, np.nan) for col in self.variables_}
+        restored = {col: np.full(len(X), np.nan) for col in self.variables_}
         for key, rows in self._series_rows(X):
             if key not in anchor_map:
                 raise ValueError(f"系列 {key} の逆変換の起点（元の値）がありません")
             for col in self.variables_:
                 start = anchor_map[key][col]
-                diffs = X[col].cast(pl.Float64).fill_null(np.nan).to_numpy()[rows]
+                diffs = X[col].astype(float).to_numpy()[rows]
                 restored[col][rows] = self._integrate(diffs, start, continues)
 
-        out = []
+        out = {}
         for col in self.variables_:
             values = restored[col]
             if self.log:
                 values = np.exp(values) - self.offset
-            # NaN（復元できない値）はnullにそろえる
-            out.append(pl.Series(col, values).fill_nan(None))
-        return X.with_columns(out)
+            out[col] = values  # 復元できない値は NaN のまま
+        return replace_columns(X, out)
 
-    def _anchor_map(self, anchors: pl.DataFrame) -> dict[GroupKey, dict[str, np.ndarray]]:
+    def _anchor_map(self, anchors: pd.DataFrame) -> dict[GroupKey, dict[str, np.ndarray]]:
         """系列ID → {列名: 起点（差分を取る前の尺度）} の辞書を作る。
 
         Raises:
             ValueError: 起点が `periods` 行未満の系列がある場合。
         """
-        base = anchors.with_columns(self._to_base(pl.col(c)).alias(c) for c in self.variables_)
+        base = replace_columns(anchors, {c: self._to_base(anchors[c]) for c in self.variables_})
         result: dict[GroupKey, dict[str, np.ndarray]] = {}
         for key, part in self._split(base):
-            if part.height < self.periods:
+            if len(part) < self.periods:
                 raise ValueError(
-                    f"系列 {key} の起点が {part.height} 行しかありません"
+                    f"系列 {key} の起点が {len(part)} 行しかありません"
                     f"（periods={self.periods} 行必要です）"
                 )
             result[key] = {
-                c: part[c].fill_null(np.nan).to_numpy().astype(np.float64) for c in self.variables_
+                c: part[c].to_numpy(dtype=np.float64, na_value=np.nan) for c in self.variables_
             }
         return result
 
-    def _split(self, frame: pl.DataFrame) -> list[tuple[GroupKey, pl.DataFrame]]:
-        """系列ごとに分割する（単一系列なら全体を1つの系列とみなす）。"""
+    def _split(self, frame: pd.DataFrame) -> list[tuple[GroupKey, pd.DataFrame]]:
+        """系列ごとに分割する（単一系列なら全体を1つの系列とみなす。出現順）。"""
         if not self.group_keys_:
             return [((), frame)]
-        parts = frame.partition_by(self.group_keys_, as_dict=True, maintain_order=True)
-        return [(tuple(k), v) for k, v in parts.items()]
+        grouped = frame.groupby(self.group_keys_, sort=False, dropna=False)
+        return [(tuple(k) if isinstance(k, tuple) else (k,), v) for k, v in grouped]
 
-    def _series_rows(self, X: pl.DataFrame) -> list[tuple[GroupKey, np.ndarray]]:
-        """系列ごとに、Xの中での行番号（出現順）を返す。"""
-        # 系列IDの列が無い場合に select([]) すると0行になるため、先に行番号を付けてから選ぶ
-        indexed = X.with_row_index(_ROW).select(_ROW, *self.group_keys_)
-        return [(key, part[_ROW].to_numpy()) for key, part in self._split(indexed)]
+    def _series_rows(self, X: pd.DataFrame) -> list[tuple[GroupKey, np.ndarray]]:
+        """系列ごとに、Xの中での行番号（0始まりの位置。出現順）を返す。"""
+        if not self.group_keys_:
+            return [((), np.arange(len(X)))]
+        positions = X[self.group_keys_].reset_index(drop=True)
+        return [(key, part.index.to_numpy()) for key, part in self._split(positions)]
 
     def _integrate(self, diffs: np.ndarray, start: np.ndarray, continues: bool) -> np.ndarray:
         """差分を位相（`t mod periods`）ごとに累積して、差分を取る前の値に戻す。

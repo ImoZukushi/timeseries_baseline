@@ -12,21 +12,31 @@ import math
 from collections.abc import Sequence
 from typing import Any, Literal, Self, cast
 
-import polars as pl
+import numpy as np
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from feature_engineering._polars_sklearn import as_variable_list
+from feature_engineering._pandas_sklearn import as_variable_list, replace_columns
 
 _COMPONENT_EXPRS = {
-    "year": lambda c: pl.col(c).dt.year(),
-    "month": lambda c: pl.col(c).dt.month(),
-    "day": lambda c: pl.col(c).dt.day(),
-    "weekday": lambda c: pl.col(c).dt.weekday(),
-    "week": lambda c: pl.col(c).dt.week(),
-    "hour": lambda c: pl.col(c).dt.hour(),
-    "minute": lambda c: pl.col(c).dt.minute(),
-    "second": lambda c: pl.col(c).dt.second(),
+    "year": lambda s: s.dt.year,
+    "month": lambda s: s.dt.month,
+    "day": lambda s: s.dt.day,
+    # 月曜=1〜日曜=7（ISO 8601。pandas の dayofweek は月曜=0）
+    "weekday": lambda s: s.dt.dayofweek + 1,
+    "week": lambda s: s.dt.isocalendar().week,
+    "hour": lambda s: s.dt.hour,
+    "minute": lambda s: s.dt.minute,
+    "second": lambda s: s.dt.second,
 }
+
+
+def _as_number(values: pd.Series) -> pd.Series:
+    """日時の成分を数値の列にする（欠損があれば float、無ければ int64）。"""
+    if values.isna().any():
+        return values.astype("float64")
+    return values.astype("int64")
+
 
 _UNIT_SECONDS = {
     "seconds": 1.0,
@@ -63,7 +73,7 @@ class DatetimeFeaturesExtractor(BaseEstimator, TransformerMixin):
         self.variables = variables
         self.components = components
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         unknown = set(self.components) - set(_COMPONENT_EXPRS)
@@ -71,14 +81,14 @@ class DatetimeFeaturesExtractor(BaseEstimator, TransformerMixin):
             raise ValueError(f"未知の成分が指定されました: {sorted(unknown)}")
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """日時成分を抽出して列を追加する。"""
-        exprs = [
-            _COMPONENT_EXPRS[component](col).alias(f"{col}_{component}")
-            for col in self.variables_
-            for component in self.components
-        ]
-        return X.with_columns(exprs)
+        values = {}
+        for col in self.variables_:
+            ts = pd.to_datetime(X[col])
+            for component in self.components:
+                values[f"{col}_{component}"] = _as_number(_COMPONENT_EXPRS[component](ts))
+        return replace_columns(X, values)
 
 
 class ElapsedTimeTransformer(BaseEstimator, TransformerMixin):
@@ -102,24 +112,26 @@ class ElapsedTimeTransformer(BaseEstimator, TransformerMixin):
         self.variables = variables
         self.unit = unit
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """訓練データの各対象カラムの最小値を基準時刻として学習する。"""
         self.variables_ = as_variable_list(self.variables)
         self.reference_: dict[str, dt.datetime] = {
-            col: cast(dt.datetime, X[col].min()) for col in self.variables_
+            col: cast(dt.datetime, pd.Timestamp(X[col].min()).to_pydatetime())
+            for col in self.variables_
         }
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """基準時刻からの経過時間（指定単位の実数）を列として追加する。"""
         divisor = _UNIT_SECONDS[self.unit]
-        exprs = [
-            (
-                (pl.col(col) - self.reference_[col]).dt.total_microseconds() / 1_000_000 / divisor
-            ).alias(f"{col}_elapsed_{self.unit}")
+        values = {
+            f"{col}_elapsed_{self.unit}": (
+                (pd.to_datetime(X[col]) - pd.Timestamp(self.reference_[col])).dt.total_seconds()
+                / divisor
+            )
             for col in self.variables_
-        ]
-        return X.with_columns(exprs)
+        }
+        return replace_columns(X, values)
 
 
 class CyclicalFeaturesEncoder(BaseEstimator, TransformerMixin):
@@ -139,16 +151,16 @@ class CyclicalFeaturesEncoder(BaseEstimator, TransformerMixin):
         self.variables = variables
         self.period = period
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """sin・cosの周期特徴量を列として追加する。"""
-        exprs = []
+        values = {}
         for col in self.variables_:
-            angle = pl.col(col) * (2 * math.pi / self.period)
-            exprs.append(angle.sin().alias(f"{col}_sin"))
-            exprs.append(angle.cos().alias(f"{col}_cos"))
-        return X.with_columns(exprs)
+            angle = X[col].astype(float) * (2 * math.pi / self.period)
+            values[f"{col}_sin"] = np.sin(angle)
+            values[f"{col}_cos"] = np.cos(angle)
+        return replace_columns(X, values)

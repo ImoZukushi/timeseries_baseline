@@ -13,15 +13,16 @@ import math
 from collections.abc import Sequence
 from typing import Any, Self
 
-import polars as pl
+import numpy as np
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import PowerTransformer
 
-from feature_engineering._polars_sklearn import as_variable_list, to_numpy_2d
+from feature_engineering._pandas_sklearn import as_variable_list, replace_columns, to_numpy_2d
 
 
 class LogTransformer(BaseEstimator, TransformerMixin):
-    """対数変換 `log(x + offset)`。`x + offset` が0以下の値はnullにする。
+    """対数変換 `log(x + offset)`。`x + offset` が0以下の値は欠損（NaN）にする。
 
     Args:
         variables: 対象カラム名。
@@ -40,29 +41,29 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         self.base = base
         self.offset = offset
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """対数変換を適用する。"""
-        exprs = []
+        values = {}
         for col in self.variables_:
-            shifted = pl.col(col) + self.offset
-            exprs.append(
-                pl.when(shifted > 0).then(shifted.log(self.base)).otherwise(None).alias(col)
-            )
-        return X.with_columns(exprs)
+            shifted = X[col].astype(float) + self.offset
+            # 0以下は対数が定義されないため欠損にする
+            values[col] = (np.log(shifted.where(shifted > 0)) / np.log(self.base)).astype(float)
+        return replace_columns(X, values)
 
-    def inverse_transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """対数変換の逆変換（`base ** y - offset`）を適用する。"""
-        exprs = [(self.base ** pl.col(col) - self.offset).alias(col) for col in self.variables_]
-        return X.with_columns(exprs)
+        return replace_columns(
+            X, {col: self.base ** X[col].astype(float) - self.offset for col in self.variables_}
+        )
 
 
 class ReciprocalTransformer(BaseEstimator, TransformerMixin):
-    """逆数変換（1/x）。x=0はnullにする。逆変換も同じ式（1/(1/x)=x）になる。
+    """逆数変換（1/x）。x=0は欠損（NaN）にする。逆変換も同じ式（1/(1/x)=x）になる。
 
     Attributes:
         variables_: fitで確定した対象カラム名のリスト。
@@ -71,26 +72,26 @@ class ReciprocalTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, variables: str | Sequence[str]) -> None:
         self.variables = variables
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """逆数変換を適用する。"""
-        exprs = [
-            pl.when(pl.col(col) != 0).then(1.0 / pl.col(col)).otherwise(None).alias(col)
-            for col in self.variables_
-        ]
-        return X.with_columns(exprs)
+        values = {}
+        for col in self.variables_:
+            x = X[col].astype(float)
+            values[col] = 1.0 / x.where(x != 0)  # 0は欠損にする
+        return replace_columns(X, values)
 
-    def inverse_transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """逆数変換の逆変換（再度逆数を取る）を適用する。"""
         return self.transform(X)
 
 
 class SqrtTransformer(BaseEstimator, TransformerMixin):
-    """平方根変換。負値はnullにする。
+    """平方根変換。負値は欠損（NaN）にする。
 
     Attributes:
         variables_: fitで確定した対象カラム名のリスト。
@@ -99,23 +100,22 @@ class SqrtTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, variables: str | Sequence[str]) -> None:
         self.variables = variables
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """平方根変換を適用する。"""
-        exprs = [
-            pl.when(pl.col(col) >= 0).then(pl.col(col).sqrt()).otherwise(None).alias(col)
-            for col in self.variables_
-        ]
-        return X.with_columns(exprs)
+        values = {}
+        for col in self.variables_:
+            x = X[col].astype(float)
+            values[col] = np.sqrt(x.where(x >= 0))  # 負値は欠損にする
+        return replace_columns(X, values)
 
-    def inverse_transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """平方根変換の逆変換（2乗）を適用する。"""
-        exprs = [(pl.col(col) ** 2).alias(col) for col in self.variables_]
-        return X.with_columns(exprs)
+        return replace_columns(X, {col: X[col].astype(float) ** 2 for col in self.variables_})
 
 
 class FixedPowerTransformer(BaseEstimator, TransformerMixin):
@@ -129,23 +129,25 @@ class FixedPowerTransformer(BaseEstimator, TransformerMixin):
         self.variables = variables
         self.power = power
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """べき乗変換を適用する。"""
-        exprs = [(pl.col(col) ** self.power).alias(col) for col in self.variables_]
-        return X.with_columns(exprs)
+        return replace_columns(
+            X, {col: X[col].astype(float) ** self.power for col in self.variables_}
+        )
 
-    def inverse_transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """べき乗変換の逆変換（1/power乗）を適用する。"""
-        exprs = [(pl.col(col) ** (1.0 / self.power)).alias(col) for col in self.variables_]
-        return X.with_columns(exprs)
+        return replace_columns(
+            X, {col: X[col].astype(float) ** (1.0 / self.power) for col in self.variables_}
+        )
 
 
-class PolarsPowerTransformer(BaseEstimator, TransformerMixin):
+class PandasPowerTransformer(BaseEstimator, TransformerMixin):
     """Box-Cox変換・Yeo-Johnson変換（`sklearn.preprocessing.PowerTransformer` をラップ）。
 
     λ（分布を最も正規分布に近づけるパラメータ）を訓練データから学習する。
@@ -162,21 +164,19 @@ class PolarsPowerTransformer(BaseEstimator, TransformerMixin):
         self.variables = variables
         self.method = method
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """訓練データからλを学習する。"""
         self.variables_ = as_variable_list(self.variables)
         self.transformer_ = PowerTransformer(method=self.method, standardize=False)
         self.transformer_.fit(to_numpy_2d(X, self.variables_))
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """学習済みのλで変換する。"""
         transformed = self.transformer_.transform(to_numpy_2d(X, self.variables_))
-        replaced = [pl.Series(col, transformed[:, i]) for i, col in enumerate(self.variables_)]
-        return X.with_columns(replaced)
+        return replace_columns(X, {col: transformed[:, i] for i, col in enumerate(self.variables_)})
 
-    def inverse_transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def inverse_transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """学習済みのλで逆変換する。"""
         original = self.transformer_.inverse_transform(to_numpy_2d(X, self.variables_))
-        replaced = [pl.Series(col, original[:, i]) for i, col in enumerate(self.variables_)]
-        return X.with_columns(replaced)
+        return replace_columns(X, {col: original[:, i] for i, col in enumerate(self.variables_)})

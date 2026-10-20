@@ -17,17 +17,38 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Self
 
-import polars as pl
+import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from feature_engineering._polars_sklearn import as_variable_list
+from feature_engineering._pandas_sklearn import as_variable_list, replace_columns
 
 
-def _per_group(expr: pl.Expr, group_by: str | Sequence[str] | None) -> pl.Expr:
-    """`group_by` 指定時は系列ごとに計算する（別系列の値がラグ等に混ざらないようにする）。"""
+def _shift(
+    X: pd.DataFrame, col: str, periods: int, group_by: str | Sequence[str] | None
+) -> pd.Series:
+    """`periods` 行前の値（`group_by` 指定時は系列ごと。別系列の値が混ざらないようにする）。"""
+    values = X[col].astype(float)
     if group_by is None:
-        return expr
-    return expr.over(as_variable_list(group_by))
+        return values.shift(periods)
+    keys = [X[k] for k in as_variable_list(group_by)]
+    return values.groupby(keys, sort=False, dropna=False).shift(periods)
+
+
+def _rolling_mean(
+    X: pd.DataFrame,
+    col: str,
+    window: int,
+    min_periods: int | None,
+    group_by: str | Sequence[str] | None,
+) -> pd.Series:
+    """後方の移動平均（`group_by` 指定時は系列ごと）。"""
+    values = X[col].astype(float)
+    if group_by is None:
+        return values.rolling(window, min_periods=min_periods).mean()
+    keys = [X[k] for k in as_variable_list(group_by)]
+    return values.groupby(keys, sort=False, dropna=False).transform(
+        lambda s: s.rolling(window, min_periods=min_periods).mean()
+    )
 
 
 class LagFeatureGenerator(BaseEstimator, TransformerMixin):
@@ -57,7 +78,7 @@ class LagFeatureGenerator(BaseEstimator, TransformerMixin):
         self.lags = lags
         self.group_by = group_by
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラム・ラグ数を確定する（学習は不要だが妥当性を検証する）。"""
         self.variables_ = as_variable_list(self.variables)
         self.lags_ = list(self.lags)
@@ -70,14 +91,16 @@ class LagFeatureGenerator(BaseEstimator, TransformerMixin):
             )
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
-        """各ラグの値を列として追加する（先頭 `lag` 件はnullになる）。"""
-        exprs = [
-            _per_group(pl.col(col).shift(lag), self.group_by).alias(f"{col}_lag_{lag}")
-            for col in self.variables_
-            for lag in self.lags_
-        ]
-        return X.with_columns(exprs)
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """各ラグの値を列として追加する（先頭 `lag` 件は欠損（NaN）になる）。"""
+        return replace_columns(
+            X,
+            {
+                f"{col}_lag_{lag}": _shift(X, col, lag, self.group_by)
+                for col in self.variables_
+                for lag in self.lags_
+            },
+        )
 
 
 class MovingAverageTransformer(BaseEstimator, TransformerMixin):
@@ -107,24 +130,26 @@ class MovingAverageTransformer(BaseEstimator, TransformerMixin):
         self.min_periods = min_periods
         self.group_by = group_by
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """移動平均を列として追加する。"""
-        exprs = [
-            _per_group(
-                pl.col(col).rolling_mean(self.window, min_samples=self.min_periods), self.group_by
-            ).alias(f"{col}_ma_{self.window}")
-            for col in self.variables_
-        ]
-        return X.with_columns(exprs)
+        return replace_columns(
+            X,
+            {
+                f"{col}_ma_{self.window}": _rolling_mean(
+                    X, col, self.window, self.min_periods, self.group_by
+                )
+                for col in self.variables_
+            },
+        )
 
 
 class RateOfChangeTransformer(BaseEstimator, TransformerMixin):
-    """変化率（前回比）。分母が0の場合はnullにする。
+    """変化率（前回比）。分母が0の場合は欠損（NaN）にする。
 
     生成される列名は `{列名}_roc_{periods}`。`inverse_transform` は
     `periods=1` の場合のみ対応する（累積積による絶対値の復元は、2点以上先の
@@ -149,24 +174,25 @@ class RateOfChangeTransformer(BaseEstimator, TransformerMixin):
         self.periods = periods
         self.group_by = group_by
 
-    def fit(self, X: pl.DataFrame, y: Any = None) -> Self:
+    def fit(self, X: pd.DataFrame, y: Any = None) -> Self:
         """対象カラムを確定する（学習は不要）。"""
         self.variables_ = as_variable_list(self.variables)
         return self
 
-    def transform(self, X: pl.DataFrame) -> pl.DataFrame:
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """変化率を列として追加する。"""
-        exprs = []
+        values = {}
         for col in self.variables_:
-            previous = _per_group(pl.col(col).shift(self.periods), self.group_by)
-            rate = pl.when(previous == 0).then(None).otherwise((pl.col(col) - previous) / previous)
-            exprs.append(rate.alias(f"{col}_roc_{self.periods}"))
-        return X.with_columns(exprs)
+            previous = _shift(X, col, self.periods, self.group_by)
+            # 分母が0の変化率は定義できないため欠損にする
+            previous = previous.where(previous != 0)
+            values[f"{col}_roc_{self.periods}"] = (X[col].astype(float) - previous) / previous
+        return replace_columns(X, values)
 
-    def inverse_transform(self, X: pl.DataFrame, initial_value: float) -> pl.DataFrame:
+    def inverse_transform(self, X: pd.DataFrame, initial_value: float) -> pd.DataFrame:
         """変化率列（`periods=1`）から絶対値を復元し、元のカラム名で列を追加/置換する。
 
-        先頭行以降のnull（0除算により変化率が定義できなかった行）は
+        先頭行以降の欠損（0除算により変化率が定義できなかった行）は
         「変化なし（変化率0）」とみなして復元する。これは、値が一度0になった
         直後の変化率は数学的に定義できない（0からの相対変化を有限の比では
         表現できない）ためで、このケースでは往復変換をしても元の値には
@@ -176,7 +202,7 @@ class RateOfChangeTransformer(BaseEstimator, TransformerMixin):
 
         Args:
             X: `{列名}_roc_1` 列を含むDataFrame。
-            initial_value: 復元の起点となる最初の絶対値（先頭行の変化率はnullのため
+            initial_value: 復元の起点となる最初の絶対値（先頭行の変化率は欠損のため
                 この値がそのまま先頭行の復元値になる）。
 
         Returns:
@@ -187,10 +213,9 @@ class RateOfChangeTransformer(BaseEstimator, TransformerMixin):
         """
         if self.periods != 1:
             raise NotImplementedError("inverse_transformはperiods=1の変化率にのみ対応しています。")
-        out = X
+        values = {}
         for col in self.variables_:
             rate_col = f"{col}_roc_{self.periods}"
-            growth_factor = 1.0 + X[rate_col].fill_null(0.0)
-            reconstructed = growth_factor.cum_prod() * initial_value
-            out = out.with_columns(reconstructed.alias(col))
-        return out
+            growth_factor = 1.0 + X[rate_col].astype(float).fillna(0.0)
+            values[col] = growth_factor.cumprod() * initial_value
+        return replace_columns(X, values)

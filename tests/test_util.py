@@ -6,7 +6,7 @@ import datetime as dt
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import polars as pl
+import pandas as pd
 import pytest
 
 from util import csv_io, paths, plotting
@@ -97,14 +97,14 @@ def test_read_csv_auto_small_cp932(tmp_path: Path) -> None:
     path = tmp_path / "small.csv"
     _write_cp932(path, "地点,気温\n富山,9.4\n高田,8.2\n")
     df = csv_io.read_csv_auto(path)
-    assert df.columns == ["地点", "気温"]
-    assert df["地点"].to_list() == ["富山", "高田"]
+    assert list(df.columns) == ["地点", "気温"]
+    assert df["地点"].tolist() == ["富山", "高田"]
 
 
-def test_read_csv_auto_large_ascii_data_uses_lossy_scan(
+def test_read_csv_auto_large_ascii_data_skips_full_decode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # 大容量ファイル判定の閾値を下げて、lazy scan（utf8-lossy）経路を強制する。
+    # 大容量ファイル判定の閾値を下げて、全文デコードしない経路を強制する。
     monkeypatch.setattr(csv_io, "LARGE_FILE_THRESHOLD_BYTES", 10)
     path = tmp_path / "large_ascii.csv"
     header = "年月日時,風速(瞬時),風向(瞬時)\n"
@@ -113,9 +113,9 @@ def test_read_csv_auto_large_ascii_data_uses_lossy_scan(
 
     df = csv_io.read_csv_auto(path)
 
-    assert df.columns == ["年月日時", "風速(瞬時)", "風向(瞬時)"]
-    assert df.height == 100
-    assert df["風向(瞬時)"].to_list()[:3] == [0, 1, 2]
+    assert list(df.columns) == ["年月日時", "風速(瞬時)", "風向(瞬時)"]
+    assert len(df) == 100
+    assert df["風向(瞬時)"].tolist()[:3] == [0, 1, 2]
 
 
 def test_read_csv_auto_large_non_ascii_data_falls_back_to_full_decode(
@@ -129,25 +129,61 @@ def test_read_csv_auto_large_non_ascii_data_falls_back_to_full_decode(
 
     df = csv_io.read_csv_auto(path)
 
-    assert df.columns == ["地点", "気温"]
-    assert set(df["地点"].to_list()) == {"富山", "高田"}
+    assert list(df.columns) == ["地点", "気温"]
+    assert set(df["地点"].tolist()) == {"富山", "高田"}
 
 
 def test_read_csv_auto_parses_datetime_like_columns(tmp_path: Path) -> None:
     path = tmp_path / "datetime.csv"
     _write_utf8(path, "ts,value\n2020-01-01 00:00:00,1\n2020-01-02 00:00:00,2\n")
     df = csv_io.read_csv_auto(path)
-    assert df.schema["ts"] == pl.Datetime
+    assert pd.api.types.is_datetime64_any_dtype(df["ts"])
 
 
-def test_read_csv_auto_parses_iso_datetime_written_by_polars(tmp_path: Path) -> None:
-    # polars の write_csv は日時列を `2016-01-19T00:00:00.000000` の形で書き出す
+def test_read_csv_auto_parses_iso_datetime(tmp_path: Path) -> None:
+    # ISO 8601 の `2016-01-19T00:00:00.000000` 形式（小数秒なしも）を日時として読む
     path = tmp_path / "iso.csv"
-    original = pl.DataFrame(
-        {"ts": [dt.datetime(2016, 1, 19), dt.datetime(2016, 1, 20, 12, 30, 15)], "v": [1, 2]}
-    )
-    original.write_csv(path)
-    assert "T" in path.read_text(encoding="utf-8")
+    _write_utf8(path, "ts,v\n2016-01-19T00:00:00.000000,1\n2016-01-20T12:30:15.000000,2\n")
     df = csv_io.read_csv_auto(path)
-    assert df.schema["ts"] == pl.Datetime
-    assert df["ts"].to_list() == original["ts"].to_list()
+    assert pd.api.types.is_datetime64_any_dtype(df["ts"])
+    assert df["ts"].tolist() == [
+        pd.Timestamp(dt.datetime(2016, 1, 19)),
+        pd.Timestamp(dt.datetime(2016, 1, 20, 12, 30, 15)),
+    ]
+    _write_utf8(path, "ts,v\n2016-01-19T00:00:00,1\n")
+    assert pd.api.types.is_datetime64_any_dtype(csv_io.read_csv_auto(path)["ts"])
+
+
+def test_read_csv_auto_null_markers(tmp_path: Path) -> None:
+    # "*" と空文字は欠損、"NA" などは値として残す
+    path = tmp_path / "null.csv"
+    _write_utf8(path, "a,b\n1,x\n*,NA\n3,\n")
+    df = csv_io.read_csv_auto(path)
+    assert df["a"].isna().tolist() == [False, True, False]
+    assert df["b"].tolist()[:2] == ["x", "NA"] and pd.isna(df["b"].iloc[2])
+
+
+def test_iter_csv_chunks_keeps_dtypes_across_chunks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(csv_io, "LARGE_FILE_THRESHOLD_BYTES", 10)
+    path = tmp_path / "large.csv"
+    header = "年月日時,風速(瞬時),地点\n"
+    # 後半の部分にだけ欠測記号 "*" がある（部分ごとに型がぶれないことを確かめる）
+    rows = [f"2020-01-01 00:{i // 60:02d}:{i % 60:02d},{i},A" for i in range(50)]
+    rows += [f"2020-01-01 01:{i // 60:02d}:{i % 60:02d},*,B" for i in range(50)]
+    _write_cp932(path, header + "\n".join(rows) + "\n")
+    chunks = list(csv_io.iter_csv_chunks(path, chunksize=30, datetime_sample_rows=20))
+    assert len(chunks) == 4
+    assert sum(len(c) for c in chunks) == 100
+    for chunk in chunks:
+        assert pd.api.types.is_datetime64_any_dtype(chunk["年月日時"])
+        assert chunk["風速(瞬時)"].dtype == "float64"
+    assert chunks[-1]["風速(瞬時)"].isna().all()
+
+
+def test_iter_csv_chunks_small_file_returns_one_frame(tmp_path: Path) -> None:
+    path = tmp_path / "small.csv"
+    _write_utf8(path, "ts,v\n2020-01-01,1\n")
+    chunks = list(csv_io.iter_csv_chunks(path))
+    assert len(chunks) == 1 and len(chunks[0]) == 1
