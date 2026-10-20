@@ -283,7 +283,7 @@ def make_experiment_config(model: str, n_trials: int) -> ExperimentConfig:
             "features": [
                 # 系列ID（文字列）を整数に変換し、モデルが変数を区別できるようにする
                 {
-                    "class": "feature_engineering.categorical.PolarsOrdinalEncoder",
+                    "class": "feature_engineering.categorical.PandasOrdinalEncoder",
                     "params": {"variables": [SERIES_COL]},
                 },
                 # 日付から月・日を取り出す（date_month, date_day 列が追加される）。
