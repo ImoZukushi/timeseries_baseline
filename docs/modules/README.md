@@ -7,7 +7,7 @@
 |---|---|---|
 | `util` | パス・CSV読み込み（エンコーディング自動判定）・matplotlibの日本語設定 | [util.md](util.md) |
 | `eda` | CSVのデータ品質チェック・時系列EDA（変換系列・移動平均・ACF/PACF） | [eda.md](eda.md) |
-| `feature_engineering` | polars DataFrame を受け取る sklearn 互換の特徴量 transformer | [feature_engineering.md](feature_engineering.md) |
+| `feature_engineering` | pandas DataFrame を受け取る sklearn 互換の特徴量 transformer | [feature_engineering.md](feature_engineering.md) |
 | `modeling` | 実験の実行基盤（設定・CV・モデル・再帰予測・チューニング・SHAP・アンサンブル・実験ログ） | [modeling.md](modeling.md) |
 | `evaluation` | 誤差評価の可視化（残差・時系列の残差診断・分類・学習曲線・影響度・SHAPの相関） | [evaluation.md](evaluation.md) |
 
@@ -29,7 +29,7 @@ util  ←  eda  ←  evaluation  ←  modeling
 
 | 項目 | 方針 |
 |---|---|
-| DataFrame | polars が基本です。pandas はモデルの入力（`modeling.pipeline.ToModelInput`）と seaborn など、ライブラリが要求する箇所だけで使います |
+| DataFrame | pandas を使います。欠損は NaN（日時は NaT）です。並べ替えは `kind="stable"`、グループ集計は `groupby(..., sort=False, dropna=False)`（出現順・欠損も1グループ）を基本にします |
 | transformer | `feature_engineering` のクラスはすべて sklearn の `fit` / `transform` 規約に従います。`sklearn.pipeline.Pipeline` に入れられます |
 | リーク防止 | `fit` は学習データだけに呼びます。`modeling` の CV は fold ごとに Pipeline を作り直し、学習 fold だけで fit します |
 | 図 | 関数の中で `util.plotting.ensure_japanese_font()` を呼ぶので、日本語の見出しはそのまま表示されます。保存先は `outputs/figures/` などを呼び出し側が渡します |
@@ -54,7 +54,7 @@ from modeling.config import ExperimentConfig
 | やりたいこと | 使うもの |
 |---|---|
 | CP932 の CSV を読みたい・日時列を自動で日時型にしたい | `util.csv_io.read_csv_auto` |
-| 数百MBの CSV をメモリに載せずに処理したい | `util.csv_io.scan_csv_auto` |
+| 数百MBの CSV をメモリに載せずに処理したい | `util.csv_io.iter_csv_chunks` |
 | CSV の欠損・分布・相関をまとめて確認したい | `eda.csv_quality.run_quality_checks`（CLI: `scripts/run_csv_quality_checks.py`） |
 | 時系列の定常性・自己相関を見たい | `eda.time_series_eda.run_time_series_checks` |
 | ラグ・移動平均・日付の特徴量を作りたい | `feature_engineering.time_series` / `datetime_features` |

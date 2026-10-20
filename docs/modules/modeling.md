@@ -75,7 +75,7 @@ uv run mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
 
 ```python
 import numpy as np
-import polars as pl
+import pandas as pd
 
 from modeling.config import ExperimentConfig
 from modeling.experiment import prepare_dataset, run_experiment
@@ -84,14 +84,15 @@ from util.paths import outputs_dir
 
 rng = np.random.default_rng(0)
 n = 300
-train = pl.DataFrame(
+train = pd.DataFrame(
     {
         "id": np.arange(n),
         "x1": rng.normal(size=n),
         "x2": rng.normal(size=n),
         "cat": rng.choice(["a", "b", "c"], n),
     }
-).with_columns((2 * pl.col("x1") - pl.col("x2") + rng.normal(scale=0.3, size=n)).alias("y"))
+)
+train["y"] = 2 * train["x1"] - train["x2"] + rng.normal(scale=0.3, size=n)
 
 config = ExperimentConfig.model_validate(
     {
@@ -100,7 +101,7 @@ config = ExperimentConfig.model_validate(
         "data": {"train_path": "unused.csv", "target": "y", "id_col": "id"},
         "features": [
             {
-                "class": "feature_engineering.categorical.PolarsOrdinalEncoder",
+                "class": "feature_engineering.categorical.PandasOrdinalEncoder",
                 "params": {"variables": ["cat"]},
             }
         ],

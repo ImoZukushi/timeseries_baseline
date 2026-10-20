@@ -30,40 +30,43 @@ out_path = ensure_parent_dir(
 
 ## `util.csv_io`
 
-### `read_csv_auto(path) -> pl.DataFrame`
+### `read_csv_auto(path) -> pd.DataFrame`
 
 CSVを読み込み、次の処理をまとめて行います。
 
 - **エンコーディング:** UTF-8 で読めなければ CP932（Shift-JIS）として読みます。
-- **日時列:** 文字列の列のうち、決まった書式に95%以上一致する列を Datetime 型に変換します。
-  対応する書式は `%Y-%m-%dT%H:%M:%S%.f`（ISO 形式。polars の `write_csv` が書き出す形）/ `%Y-%m-%d %H:%M:%S` / `%Y-%m-%d` /
+- **日時列:** 文字列の列のうち、決まった書式に95%以上一致する列を日時型（`datetime64[us]`）に変換します。
+  対応する書式は `%Y-%m-%dT%H:%M:%S.%f` / `%Y-%m-%dT%H:%M:%S`（ISO 形式）/ `%Y-%m-%d %H:%M:%S` / `%Y-%m-%d` /
   `%Y/%m/%d %H:%M:%S` / `%Y/%m/%d %H:%M` / `%Y/%m/%d` です。
-- **欠測記号:** `*` を欠損（null）として読みます。`wind_*.csv` の風速・風向で使われています。
+- **欠測記号:** 空欄と `*` を欠損（NaN）として読みます。`*` は `wind_*.csv` の風速・風向で使われています。
+  `NA` などの文字列は欠損にせず、値として残します。
 - **大容量ファイル:** 30MBを超え、ヘッダ以外がASCII文字だけのファイルは、全文をデコードせずに読みます。
 
-### `scan_csv_auto(path, datetime_sample_rows=1000) -> pl.LazyFrame`
+### `iter_csv_chunks(path, chunksize=200_000, datetime_sample_rows=1000) -> Iterator[pd.DataFrame]`
 
-`read_csv_auto` の LazyFrame 版です。大容量でデータ本体がASCII文字だけのCSVは、`pl.scan_csv` で遅延読み込みします。
-`sink_parquet` などと組み合わせれば、全行をメモリに載せずに処理できます。それ以外のファイルは `read_csv_auto(path).lazy()` と同じです。
+`read_csv_auto` を、`chunksize` 行ずつの DataFrame に分けて順に返す版です。大容量でデータ本体がASCII文字だけのCSVは、
+`pd.read_csv(chunksize=...)` で塊ごとに読むので、全行をメモリに載せずに処理できます。それ以外のファイルは
+`read_csv_auto(path)` の結果を1つだけ返します。
 
-`read_csv_auto` と違い、日時の書式は先頭 `datetime_sample_rows` 行だけで判定します。
+- 各列の種類（日時と書式・数値・文字列）は先頭 `datetime_sample_rows` 行で決め、すべての塊で同じ型にそろえます。
+- 塊ごとに読む場合、数値の列は（後の塊に欠損があっても型が変わらないよう）`float64` になります。
+
 時系列ビューア（`app/timeseries_viewer`）の Parquet キャッシュ作成で使っています。
 
 ```python
-import polars as pl
+import pandas as pd
 
-from util.csv_io import read_csv_auto, scan_csv_auto
+from util.csv_io import iter_csv_chunks, read_csv_auto
 from util.paths import data_dir
 
 weather = read_csv_auto(data_dir() / "raw" / "weather.csv")  # CP932・日時列は自動変換
 
-# 580MBの秒単位データも、全行を読まずに集計できる
-wind = scan_csv_auto(data_dir() / "raw" / "wind_0" / "下条川.csv")
-daily_max = (
-    wind.group_by(pl.col("年月日時").dt.date().alias("date"))
-    .agg(pl.col("風速(瞬時)").max())
-    .collect()
-)
+# 580MBの秒単位データも、塊ごとに集計してから合わせれば全行を読まずに済む
+partial = [
+    chunk.groupby(chunk["年月日時"].dt.date)["風速(瞬時)"].max()
+    for chunk in iter_csv_chunks(data_dir() / "raw" / "wind_0" / "下条川.csv")
+]
+daily_max = pd.concat(partial).groupby(level=0).max()
 ```
 
 その他の公開関数・定数:
@@ -72,7 +75,8 @@ daily_max = (
 |---|---|
 | `detect_encoding(path, sample_size=1_000_000)` | 先頭のバイト列から `"utf-8"` か `"cp932"` を推定する |
 | `LARGE_FILE_THRESHOLD_BYTES` | 大容量ファイルとみなす閾値（30MB） |
-| `NULL_VALUE_MARKERS` | 欠測とみなす値（`["*"]`） |
+| `NULL_VALUE_MARKERS` | 空欄のほかに欠測とみなす値（`["*"]`） |
+| `DEFAULT_CHUNKSIZE` | `iter_csv_chunks` の1回あたりの行数（200,000） |
 | `DATETIME_PARSE_SUCCESS_THRESHOLD` | 日時列とみなす変換成功率（0.95） |
 
 ## `util.plotting`

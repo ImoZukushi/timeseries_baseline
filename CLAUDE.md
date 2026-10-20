@@ -38,7 +38,7 @@ uv run mypy src
 
 ## Key Conventions
 
-- DataFrame operations: prefer **polars** over pandas.
+- DataFrame operations: use **pandas** (polars is not a dependency).
 - Visualization: use `fig, ax = plt.subplots(...)`, not `plt.figure(...)`.
 - File paths: use `pathlib.Path`, no absolute local paths.
 - Docstrings: Google-style.
@@ -50,7 +50,7 @@ uv run mypy src
 ### Python files (`**/*.py`)
 
 - Follow `python-style` skill: type hints, Google-style docstrings, Japanese comments.
-- Follow `dataframe-polars` skill: prefer polars over pandas.
+- Follow `dataframe-pandas` skill: use pandas for DataFrames.
 - Follow `path-and-io` skill: use pathlib.Path, no absolute paths.
 
 ### Data files (`data/**`)
@@ -88,7 +88,7 @@ uv run mypy src
 | Reading / writing / moving data files | [safe-data-handling](.claude/skills/safe-data-handling/SKILL.md) + [path-and-io](.claude/skills/path-and-io/SKILL.md) |
 | Writing or reviewing SQL | [sql-analysis](.claude/skills/sql-analysis/SKILL.md) |
 | Writing or reviewing Python code | [python-style](.claude/skills/python-style/SKILL.md) |
-| DataFrame operations | [dataframe-polars](.claude/skills/dataframe-polars/SKILL.md) |
+| DataFrame operations | [dataframe-pandas](.claude/skills/dataframe-pandas/SKILL.md) |
 | Charts and visualization | [visualization](.claude/skills/visualization/SKILL.md) |
 | Notebook creation and editing | [notebook-workflow](.claude/skills/notebook-workflow/SKILL.md) |
 | Statistics or ML | [statistical-ml-review](.claude/skills/statistical-ml-review/SKILL.md) |
@@ -114,7 +114,7 @@ uv run mypy src
 
 @.claude/skills/python-project-ops/SKILL.md
 @.claude/skills/python-style/SKILL.md
-@.claude/skills/dataframe-polars/SKILL.md
+@.claude/skills/dataframe-pandas/SKILL.md
 @.claude/skills/path-and-io/SKILL.md
 @.claude/skills/safe-data-handling/SKILL.md
 @.claude/skills/sql-analysis/SKILL.md

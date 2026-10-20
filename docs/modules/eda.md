@@ -1,6 +1,6 @@
 # `eda` — データ品質チェックと時系列EDA
 
-読み込み済みの polars DataFrame を受け取り、確認用の表と図を保存します。
+読み込み済みの pandas DataFrame を受け取り、確認用の表と図を保存します。
 読み込みは `util.csv_io.read_csv_auto` で行う前提です。
 
 | モジュール | 内容 |
@@ -123,11 +123,11 @@ print(done[:3])  # 例: ['weather_富山:気温(℃)', ...]
 | `plot_series_with_moving_average` / `plot_acf_correlogram` / `plot_pacf_correlogram` | 上の各図を1枚ずつ作る |
 
 ```python
-import polars as pl
+import pandas as pd
 
 from eda.time_series_eda import build_transformed_series, compute_acf
 
-values = pl.Series("y", [float(10 + (i % 7) + i * 0.1) for i in range(200)])
+values = pd.Series([float(10 + (i % 7) + i * 0.1) for i in range(200)], name="y")
 series = build_transformed_series(values, seasonal_period=7)
 acf = compute_acf(series["seasonal_diff"], nlags=14)  # 季節差分で周期7の自己相関が消えるかを見る
 ```

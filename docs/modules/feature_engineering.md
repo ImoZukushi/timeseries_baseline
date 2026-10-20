@@ -1,6 +1,6 @@
 # `feature_engineering` — 特徴量の transformer
 
-polars DataFrame を受け取って polars DataFrame を返す、sklearn 互換の transformer の集まりです。
+pandas DataFrame を受け取って pandas DataFrame を返す、sklearn 互換の transformer の集まりです（行の並びとインデックスは入力のまま）。
 `fit` / `transform`（`fit_transform` は `TransformerMixin`）の規約に従うので、`sklearn.pipeline.Pipeline` にそのまま入れられます。
 `modeling` の実験設定 `features` に書くと、CV の fold ごとに学習データだけで fit されます。
 
@@ -26,25 +26,23 @@ polars DataFrame を受け取って polars DataFrame を返す、sklearn 互換�
   複数の系列が混ざるデータは `group_by` に系列IDの列を渡すと、系列ごとに計算します。
 
 ```python
-import polars as pl
+import pandas as pd
 from sklearn.pipeline import Pipeline
 
-from feature_engineering.categorical import PolarsOrdinalEncoder
+from feature_engineering.categorical import PandasOrdinalEncoder
 from feature_engineering.datetime_features import CyclicalFeaturesEncoder, DatetimeFeaturesExtractor
 from feature_engineering.time_series import LagFeatureGenerator
 
-train = pl.DataFrame(
+train = pd.DataFrame(
     {
-        "date": pl.datetime_range(
-            pl.datetime(2024, 1, 1), pl.datetime(2024, 1, 10), "1d", eager=True
-        ),
+        "date": pd.date_range("2024-01-01", "2024-01-10", freq="D"),
         "store": ["a", "b"] * 5,
         "sales": [float(v) for v in range(10)],
     }
 )
 pipe = Pipeline(
     [
-        ("store", PolarsOrdinalEncoder("store")),
+        ("store", PandasOrdinalEncoder("store")),
         ("date", DatetimeFeaturesExtractor("date", components=["month", "weekday"])),
         ("cyclic", CyclicalFeaturesEncoder("date_weekday", period=7)),
         ("lag", LagFeatureGenerator("sales", lags=[1, 2], group_by="store")),
@@ -58,13 +56,13 @@ features = pipe.fit_transform(train)
 
 | クラス | 主な引数 | 出力 | 未知のカテゴリ |
 |---|---|---|---|
-| `PolarsOneHotEncoder` | `min_frequency`, `max_categories` | `{列名}_{カテゴリ}` の0/1列を追加（元の列は残る） | すべて0 |
-| `PolarsOrdinalEncoder` | － | カテゴリを整数に置き換え | null |
-| `TargetGuidedOrdinalEncoder` | － | 目的変数の平均が小さい順の順位に置き換え（`fit(X, y)`） | null |
-| `PolarsTargetEncoder` | `smoothing`, `cv=5`, `target_type`, `random_state` | 目的変数の平均（sklearn `TargetEncoder`）に置き換え | 学習時の全体平均 |
+| `PandasOneHotEncoder` | `min_frequency`, `max_categories` | `{列名}_{カテゴリ}` の0/1列を追加（元の列は残る） | すべて0 |
+| `PandasOrdinalEncoder` | － | カテゴリを整数に置き換え | NaN |
+| `TargetGuidedOrdinalEncoder` | － | 目的変数の平均が小さい順の順位に置き換え（`fit(X, y)`） | NaN |
+| `PandasTargetEncoder` | `smoothing`, `cv=5`, `target_type`, `random_state` | 目的変数の平均（sklearn `TargetEncoder`）に置き換え | 学習時の全体平均 |
 | `RareLabelGrouper` | `min_frequency` または `min_ratio`, `other_label="Other"` | 頻度の低いカテゴリを `other_label` にまとめる | `other_label` |
 
-`PolarsTargetEncoder.fit_transform(X, y)` は、学習データ自身を cross-fitting（他の fold の統計量でエンコード）で変換します。
+`PandasTargetEncoder.fit_transform(X, y)` は、学習データ自身を cross-fitting（他の fold の統計量でエンコード）で変換します。
 `fit(X, y).transform(X)` と結果が異なり、学習データの目的変数がそのまま漏れません。
 Pipeline の中では `fit_transform` が使われるので、意識せずに安全に使えます。
 
@@ -82,11 +80,11 @@ Pipeline の中では `fit_transform` が使われるので、意識せずに安
 
 | クラス | 変換 | 逆変換 | 範囲外の値 |
 |---|---|---|---|
-| `LogTransformer(base=e, offset=0)` | `log(x + offset)` | `base ** y - offset` | `x + offset <= 0` は null |
-| `ReciprocalTransformer` | `1 / x` | `1 / y` | `x = 0` は null |
-| `SqrtTransformer` | `√x` | `y²` | 負の値は null |
+| `LogTransformer(base=e, offset=0)` | `log(x + offset)` | `base ** y - offset` | `x + offset <= 0` は NaN |
+| `ReciprocalTransformer` | `1 / x` | `1 / y` | `x = 0` は NaN |
+| `SqrtTransformer` | `√x` | `y²` | 負の値は NaN |
 | `FixedPowerTransformer(power)` | `x ** power` | `y ** (1/power)` | － |
-| `PolarsPowerTransformer(method="yeo-johnson")` | Box-Cox / Yeo-Johnson（λ を学習） | 学習した λ で逆変換 | Box-Cox は正の値のみ |
+| `PandasPowerTransformer(method="yeo-johnson")` | Box-Cox / Yeo-Johnson（λ を学習） | 学習した λ で逆変換 | Box-Cox は正の値のみ |
 
 ## `scaling`
 
@@ -94,10 +92,10 @@ Pipeline の中では `fit_transform` が使われるので、意識せずに安
 
 | クラス | 変換 |
 |---|---|
-| `PolarsMinMaxScaler` | `(x - min) / (max - min)` |
-| `PolarsRobustScaler(quantile_range=(25, 75))` | `(x - 中央値) / 四分位範囲` |
+| `PandasMinMaxScaler` | `(x - min) / (max - min)` |
+| `PandasRobustScaler(quantile_range=(25, 75))` | `(x - 中央値) / 四分位範囲` |
 | `MeanNormalizationScaler` | `(x - mean) / (max - min)` |
-| `PolarsMaxAbsScaler` | `x / max(|x|)` |
+| `PandasMaxAbsScaler` | `x / max(|x|)` |
 
 ## `time_series`
 
@@ -105,9 +103,9 @@ Pipeline の中では `fit_transform` が使われるので、意識せずに安
 
 | クラス | 主な引数 | 追加される列 |
 |---|---|---|
-| `LagFeatureGenerator` | `lags`（1以上）, `group_by` | `{列名}_lag_{k}`（先頭 k 行は null） |
+| `LagFeatureGenerator` | `lags`（1以上）, `group_by` | `{列名}_lag_{k}`（先頭 k 行は NaN） |
 | `MovingAverageTransformer` | `window`, `min_periods`, `group_by` | `{列名}_ma_{window}`（現在の行を含む後方の平均） |
-| `RateOfChangeTransformer` | `periods=1`, `group_by` | `{列名}_roc_{periods}`（前期比。分母0は null） |
+| `RateOfChangeTransformer` | `periods=1`, `group_by` | `{列名}_roc_{periods}`（前期比。分母0は NaN） |
 
 `MovingAverageTransformer` は**現在の行を含む**平均です。目的変数の移動平均を特徴量にするときは、ラグ列（`y_lag_1`）に対して使います。
 `modeling` の `forecast.rolling_windows` は、内部でこの形（`{目的変数}_lag_1_ma_{w}`）にしています。
@@ -125,8 +123,8 @@ Pipeline の中では `fit_transform` が使われるので、意識せずに安
 | `log_seasonal_diff` | `log x_t - log x_{t-s}` | `DifferenceTransformer(periods=s, log=True)` |
 
 `DifferenceTransformer` の仕様:
-- 各系列の先頭 `periods` 行は前の値が無いため null になります。
-- `log=True` で `x + offset <= 0` の値があると、`fit` でエラーにします（黙って null にすると逆変換が壊れるため）。
+- 各系列の先頭 `periods` 行は前の値が無いため NaN になります。
+- `log=True` で `x + offset <= 0` の値があると、`fit` でエラーにします（黙って欠損にすると逆変換が壊れるため）。
 - 逆変換 `inverse_transform(X, history=...)` は、差分を累積して元の値に戻します。起点は `history` で選びます。
 
 | `history` | 起点 | 用途 |
@@ -136,17 +134,17 @@ Pipeline の中では `fit_transform` が使われるので、意識せずに安
 | DataFrame | 渡した過去データ（元の尺度）の末尾 | その直後の期間を復元する |
 
 ```python
-import polars as pl
+import pandas as pd
 
 from feature_engineering.series_transform import make_series_transformer
 
-history = pl.DataFrame({"y": [float(10 + i % 7) for i in range(28)]})
+history = pd.DataFrame({"y": [float(10 + i % 7) for i in range(28)]})
 tf = make_series_transformer("seasonal_diff", "y", seasonal_period=7)
-z = tf.fit_transform(history)  # 先頭7行は null、以降は前週同曜日との差
+z = tf.fit_transform(history)  # 先頭7行は NaN、以降は前週同曜日との差
 
 # 予測した差分（直後の7期）を元の尺度に戻す
-z_pred = pl.DataFrame({"y": [0.0] * 7})
+z_pred = pd.DataFrame({"y": [0.0] * 7})
 y_pred = tf.inverse_transform(z_pred, history="fit")  # 前週と同じ値になる
 ```
 
-差分の途中に欠損があると、それ以降の同じ位相の値は復元できず null になります（差分表現の原理的な制約です）。
+差分の途中に欠損があると、それ以降の同じ位相の値は復元できず NaN になります（差分表現の原理的な制約です）。
