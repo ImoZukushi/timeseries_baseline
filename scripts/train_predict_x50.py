@@ -306,7 +306,7 @@ def load_inputs(
         f"{test_start:%Y-%m-%d}",
         f"{test[DATE_COL].max():%Y-%m-%d}",
     )
-    logger.info("目的変数: %s（それぞれ別のモデルで予測する）", selected)
+    logger.info("目的変数: %s", selected)
     logger.info(
         "特徴量（目的変数ごと）: 自身のラグ等 %d列（ラグ %s, 移動平均 %s, 前日比 %s。"
         "再帰予測で作り直す）, 日付・説明変数 %d列",
