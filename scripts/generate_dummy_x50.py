@@ -1,13 +1,18 @@
-"""特徴量エンジニアリングの動作確認用に、日次のダミーデータ（date, Y1〜Y10, X1〜X50）を作る。
+"""特徴量エンジニアリングの動作確認用に、日次のダミーデータ（10種類の目的変数・X1〜X50）を作る。
 
 1本の系列として作り、学習期間とテスト期間に分けて保存する（いずれも gitの管理外）。
+データは long 型（1行 = 日付 × 目的変数の種類）で、目的変数の値を `Y`、種類（`Y1`〜`Y10`）を
+カテゴリ変数 `Y_cat` に入れる。説明変数 X1〜X50 は日付ごとの値なので、同じ日付の行（10行）で
+同じ値になる。
 実データではないため `data/raw` には置かず、合成データ用の `data/synthetic/x50/` に置く。
 
 | ファイル | 期間（既定） | 列 |
 |---|---|---|
-| `dummy_x50_train.csv` | 2022-01-01〜2024-12-31 | `date`, `Y1`〜`Y10`, `X1`〜`X50` |
-| `dummy_x50_test.csv` | 2025-01-01〜2025-12-31 | `date`, `X1`〜`X50`（目的変数なし） |
-| `dummy_x50_test_answer.csv` | テストと同じ | `date`, `Y1`〜`Y10`（予測の評価だけに使う正解） |
+| `dummy_x50_train.csv` | 2022-01-01〜2024-12-31 | `date`, `Y_cat`, `Y`, `X1`〜`X50` |
+| `dummy_x50_test.csv` | 2025-01-01〜2025-12-31 | `date`, `Y_cat`, `X1`〜`X50`（目的変数の値なし） |
+| `dummy_x50_test_answer.csv` | テストと同じ | `date`, `Y_cat`, `Y`（予測の評価だけに使う正解） |
+
+行は日付の昇順、同じ日付の中は `Y1`, `Y2`, …, `Y10` の順。
 
 説明変数は前処理の違いが分かるよう、性質の異なる5種類を10列ずつ用意する。
 
@@ -19,7 +24,8 @@
 | X31〜X40 | 件数（ポアソン分布の整数） |
 | X41〜X50 | 目的変数と無関係なノイズ |
 
-目的変数 Y1〜Y10 は、前日の自分自身（自己相関）・年周期の季節性・一部の説明変数から作る正の値。
+目的変数（`Y_cat` が Y1〜Y10 の `Y`）は、前日の自分自身（自己相関）・年周期の季節性・一部の説明変数
+から作る正の値。
 モデルや前処理の違いが見えるよう、目的変数ごとに次を変える。
 
 - 水準（10〜200）と、季節性の強さ・位相
@@ -48,7 +54,9 @@ from util.paths import data_dir, ensure_parent_dir  # noqa: E402
 
 N_FEATURES = 50
 N_TARGETS = 10
-TARGET_COLS = [f"Y{k}" for k in range(1, N_TARGETS + 1)]
+TARGET_COLS = [f"Y{k}" for k in range(1, N_TARGETS + 1)]  # 目的変数の種類（`Y_cat` の値）
+CAT_COL = "Y_cat"  # long 型の表で、目的変数の種類を入れる列
+VALUE_COL = "Y"  # long 型の表で、目的変数の値を入れる列
 OUTPUT_DIR = data_dir() / "synthetic" / "x50"
 TRAIN_FILENAME = "dummy_x50_train.csv"
 TEST_FILENAME = "dummy_x50_test.csv"
@@ -147,23 +155,46 @@ def _make_target(
     return y
 
 
+def to_long(frame: pd.DataFrame) -> pd.DataFrame:
+    """wide 型（列 `date`, `Y1`〜`Y10`, `X1`〜`X50`）を long 型にする。
+
+    long 型の列は `date`, `Y_cat`, `Y`, `X1`〜`X50`。
+
+    行は日付の昇順、同じ日付の中は目的変数の種類の順（`Y1`, `Y2`, …）。
+    """
+    feature_cols = [c for c in frame.columns if c not in ("date", *TARGET_COLS)]
+    long = frame.melt(
+        id_vars=["date", *feature_cols],
+        value_vars=TARGET_COLS,
+        var_name=CAT_COL,
+        value_name=VALUE_COL,
+    )
+    # 目的変数の種類の並び（Y1, Y2, …, Y10。文字列の並びでは Y10 が Y1 の次になるため番号で並べる）
+    order = {name: i for i, name in enumerate(TARGET_COLS)}
+    long = long.sort_values(
+        ["date", CAT_COL], key=lambda s: s.map(order) if s.name == CAT_COL else s, kind="stable"
+    )
+    return long[["date", CAT_COL, VALUE_COL, *feature_cols]].reset_index(drop=True)
+
+
 def split_train_test(
     frame: pd.DataFrame, test_start: str
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """学習データ・テストデータ（目的変数なし）・テストの正解に分ける。
+    """long 型の学習データ・テストデータ（目的変数の値なし）・テストの正解に分ける。
 
     Args:
-        frame: `make_dummy_frame` の結果。
+        frame: `make_dummy_frame` の結果（wide 型）。
         test_start: テスト期間の開始日（この日以降がテスト）。
 
     Returns:
-        (学習データ, テストデータ, テストの正解)。
+        (学習データ, テストデータ, テストの正解)。いずれも long 型。
     """
-    is_test = frame["date"] >= pd.Timestamp(test_start)
-    train = frame[~is_test].reset_index(drop=True)
-    # テストデータには目的変数を入れない（予測時に分からない値のため）
-    test = frame[is_test].drop(columns=TARGET_COLS).reset_index(drop=True)
-    answer = frame.loc[is_test, ["date", *TARGET_COLS]].reset_index(drop=True)
+    long = to_long(frame)
+    is_test = long["date"] >= pd.Timestamp(test_start)
+    train = long[~is_test].reset_index(drop=True)
+    # テストデータには目的変数の値を入れない（予測時に分からない値のため）。種類（Y_cat）は残す
+    test = long[is_test].drop(columns=VALUE_COL).reset_index(drop=True)
+    answer = long.loc[is_test, ["date", CAT_COL, VALUE_COL]].reset_index(drop=True)
     return train, test, answer
 
 
