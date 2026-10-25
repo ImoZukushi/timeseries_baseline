@@ -16,6 +16,8 @@
   確かめる。
 - CVは日付で区切る時系列CV（全系列で同じ境目）。検証期間も再帰予測で評価する。
 - 正解ファイルは、テスト予測が終わった後の評価にだけ使う。
+- 欠損の扱いは `train_predict_x50.py` と同じ（目的変数が欠損の行は学習・評価から除き、履歴としては
+  残す。ラグ・移動平均・説明変数の欠損は埋めない）。
 
 注意: 学習の早期終了・チューニングの指標（MAE）は全系列の行をまとめて計算するため、
 水準の高い種類の誤差の影響が大きくなる。種類ごとの MAE・相対MAE は要約の表で確認する。
@@ -56,7 +58,7 @@ import train_predict_x50 as base  # noqa: E402
 from modeling.config import ExperimentConfig  # noqa: E402
 from modeling.dataset import Dataset  # noqa: E402
 from modeling.experiment import ExperimentResult, prepare_dataset, run_experiment  # noqa: E402
-from modeling.forecasting import ForecastCVResult  # noqa: E402
+from modeling.forecasting import ForecastCVResult, make_builder  # noqa: E402
 from modeling.metrics import get_metric  # noqa: E402
 from modeling.tracking import Tracker  # noqa: E402
 from util.paths import ensure_parent_dir, outputs_dir  # noqa: E402
@@ -173,6 +175,8 @@ def make_config(
                 "series_col": base.CAT_COL,
                 "lags": spec.lags,
                 "rolling_windows": spec.rolling_windows,
+                # 目的変数に欠損があっても、窓内の観測値だけで移動平均を作る
+                "rolling_min_periods": base.ROLLING_MIN_PERIODS,
                 "rate_of_change": spec.rate_of_change,
                 "target_transform": "log",
             },
@@ -193,6 +197,8 @@ def prepare(config: ExperimentConfig, inputs: base.Inputs) -> Dataset:
     確かめること:
         - 系列ごとに作り直した目的変数の特徴量が、学習データのCSVの値（種類ごとに作ったもの）と
           一致する（＝他の種類の値が混ざっていない・過去の値だけから作られている）。
+          各系列のCSVの先頭 `lookback` 日は、CSVに無い過去の日を使うため比べない。
+          欠損の位置も一致することを確かめる。
         - モデルの特徴量に、目的変数（`Y`・`Y_raw`）の列が無い。
         - CVの各foldで、学習期間がすべて検証期間より前にある（全系列で同じ境目）。
         - テストデータに目的変数が無い。
@@ -214,9 +220,16 @@ def prepare(config: ExperimentConfig, inputs: base.Inputs) -> Dataset:
         suffixes=("", "_csv"),
         validate="1:1",
     )
+    # 各系列のCSVの先頭 lookback 日は、CSVに無い過去の日を使うため作り直しても一致しない
+    lookback = make_builder(config).lookback
+    position = dataset.frame.groupby(base.CAT_COL, sort=False).cumcount().to_numpy()
+    comparable = position >= lookback
     for col in spec.columns:
-        comparable = merged[col].notna()
-        if not np.allclose(merged.loc[comparable, col], merged.loc[comparable, f"{col}_csv"]):
+        if not np.allclose(
+            merged.loc[comparable, col].to_numpy(dtype=float),
+            merged.loc[comparable, f"{col}_csv"].to_numpy(dtype=float),
+            equal_nan=True,
+        ):
             raise base.LeakageError(
                 f"系列ごとに作り直した {col} が、学習データのCSVの値と一致しません"
             )
@@ -225,13 +238,19 @@ def prepare(config: ExperimentConfig, inputs: base.Inputs) -> Dataset:
     if leaked:
         raise base.LeakageError(f"モデルの特徴量に目的変数の列があります: {leaked}")
     n_categories = len(inputs.categories)
-    n_head = int(merged[spec.columns].isna().any(axis=1).sum())
     logger.info(
         "目的変数の特徴量: 系列ごとに作り直した値がCSVと一致"
-        "（%d系列 × 先頭 %d日は過去の日数が足りないため欠損）",
+        "（%d系列 × 先頭 %d日は過去の日数が足りないため比べない）",
         n_categories,
-        n_head // n_categories,
+        lookback,
     )
+    n_missing = int(np.isnan(dataset.y).sum())
+    if n_missing:
+        logger.info(
+            "目的変数が欠損の %d行（%.1f%%）は学習・評価に使わない（履歴としては残す）",
+            n_missing,
+            100 * n_missing / len(dataset.y),
+        )
 
     dates = pd.to_datetime(dataset.frame[base.DATE_COL])
     for i, (train_idx, valid_idx) in enumerate(dataset.folds):
@@ -319,9 +338,11 @@ def collect_predictions(
     if answer is not None:
         # 正解（long 型）はテスト予測が終わった後にだけ使う
         actual = answer[[*keys, base.TARGET_COL]].rename(columns={base.TARGET_COL: base.ACTUAL_COL})
-        predictions = predictions.merge(actual, on=keys, how="left", validate="1:1")
-        if predictions[base.ACTUAL_COL].isna().any():
+        # 正解の値が欠損の行は、評価（MAE）から除く（actual は欠損のまま残す）
+        predictions = predictions.merge(actual, on=keys, how="left", validate="1:1", indicator=True)
+        if (predictions["_merge"] != "both").any():
             raise ValueError("正解ファイルに、テスト期間の一部の日付・種類がありません")
+        predictions = predictions.drop(columns="_merge")
     oof = pd.DataFrame(
         {
             base.DATE_COL: dataset.frame[base.DATE_COL].to_numpy(),
@@ -339,7 +360,10 @@ def collect_predictions(
 
 
 def summary_frame(run: GlobalRun) -> pd.DataFrame:
-    """種類（系列）ごとの MAE をまとめた表（`train_predict_x50.summary_frame` と同じ列）。"""
+    """種類（系列）ごとの MAE をまとめた表（`train_predict_x50.summary_frame` と同じ列）。
+
+    正解が欠損の行は MAE・相対MAE の計算から除く。
+    """
     mae = get_metric("mae")
     actual_col, pred_col = base.ACTUAL_COL, base.PRED_COL
     rows = []

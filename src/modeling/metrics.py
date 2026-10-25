@@ -50,7 +50,19 @@ class Metric:
     tasks: frozenset[Task]
 
     def __call__(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """指標を計算する。"""
+        """指標を計算する。
+
+        正解（`y_true`）が欠損（NaN）の行は評価から除く（実測が無い時点の予測は採点できないため）。
+        全行が欠損ならNaNを返す。予測値の欠損は除かない（予測漏れを見逃さないため）。
+        """
+        y_true = np.asarray(y_true)
+        y_pred = np.asarray(y_pred)
+        if y_true.dtype.kind == "f":
+            observed = ~np.isnan(y_true)
+            if not observed.any():
+                return float("nan")
+            if not observed.all():
+                y_true, y_pred = y_true[observed], y_pred[observed]
         return float(self.func(y_true, y_pred))
 
     @property

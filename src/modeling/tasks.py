@@ -26,7 +26,9 @@ def is_classification(task: Task) -> bool:
     return task in (Task.BINARY, Task.MULTICLASS)
 
 
-def encode_target(y: np.ndarray, task: Task) -> tuple[np.ndarray, np.ndarray | None]:
+def encode_target(
+    y: np.ndarray, task: Task, allow_missing: bool = False
+) -> tuple[np.ndarray, np.ndarray | None]:
     """目的変数をモデルに渡せる形式に変換する。
 
     分類タスクではラベルを 0..K-1 の整数に変換する（XGBoost等が整数ラベルを要求するため）。
@@ -35,12 +37,15 @@ def encode_target(y: np.ndarray, task: Task) -> tuple[np.ndarray, np.ndarray | N
     Args:
         y: 目的変数の1次元配列。
         task: 予測タスク。
+        allow_missing: 回帰タスクで欠損（NaN）を許すか。再帰予測（`forecast`）では、
+            欠損の行を学習・評価から除いたうえで、行は履歴として残すため True にする。
 
     Returns:
         (変換後の目的変数, 元のクラスラベル配列)。回帰ではクラスラベルはNone。
 
     Raises:
-        ValueError: 目的変数に欠損がある場合、または二値分類でクラス数が2でない場合。
+        ValueError: 目的変数に欠損がある場合（`allow_missing` の回帰を除く）、
+            または二値分類でクラス数が2でない場合。
     """
     if is_classification(task):
         if any(v is None for v in y.tolist()):
@@ -50,7 +55,7 @@ def encode_target(y: np.ndarray, task: Task) -> tuple[np.ndarray, np.ndarray | N
             raise ValueError(f"二値分類のクラス数が2ではありません: {len(classes)}")
         return encoded.astype(np.int64), classes
     y_float = y.astype(np.float64)
-    if np.isnan(y_float).any():
+    if not allow_missing and np.isnan(y_float).any():
         raise ValueError("目的変数に欠損値が含まれています")
     return y_float, None
 

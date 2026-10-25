@@ -45,6 +45,19 @@ def test_regression_metrics() -> None:
     )
 
 
+def test_metrics_skip_missing_targets() -> None:
+    y = np.array([1.0, np.nan, 3.0, np.nan])
+    p = np.array([2.0, 100.0, 5.0, -100.0])
+    # 正解が欠損の行は除いて計算する
+    assert _score("mae", y, p) == pytest.approx(1.5)
+    assert _score("rmse", y, p) == pytest.approx(math.sqrt(2.5))
+    # 全行が欠損ならNaN
+    assert math.isnan(_score("mae", np.full(2, np.nan), np.array([1.0, 2.0])))
+    # 予測値の欠損は除かない（予測漏れを見逃さない）
+    with pytest.raises(ValueError):
+        _score("mae", np.array([1.0, 2.0]), np.array([1.0, np.nan]))
+
+
 def test_rmsle_clips_negative_predictions() -> None:
     y = np.array([0.0, 1.0])
     p = np.array([-1.0, math.e - 1])  # 負の予測は0として扱う

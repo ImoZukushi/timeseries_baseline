@@ -124,7 +124,11 @@ def prepare_dataset(
         test = test.reset_index(drop=True)
 
     features = select_feature_columns(config, list(train.columns))
-    y, classes = encode_target(train[data.target].to_numpy(), config.task)
+    # 再帰予測では、目的変数が欠損の行も履歴（ラグの元）として残す。
+    # 欠損の行は学習・評価から除かれる（`recursive_backtest`・`Metric`）
+    y, classes = encode_target(
+        train[data.target].to_numpy(), config.task, allow_missing=config.forecast is not None
+    )
     groups = None if data.group_col is None else train[data.group_col].to_numpy()
     folds = make_folds(config.cv, train, y, groups, time_column=data.time_col)
     ids_test = None if test is None or data.id_col is None else test[data.id_col]

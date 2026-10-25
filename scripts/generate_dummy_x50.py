@@ -20,7 +20,7 @@
 |---|---|
 | X1〜X10 | 季節性・トレンドのある連続値（正規分布に近い） |
 | X11〜X20 | 右に裾の長い正の値（対数正規分布）。べき変換の対象になる |
-| X21〜X30 | 連続値で、ところどころ欠損がある（約2%） |
+| X21〜X30 | 連続値（散発的な欠損が他の列より多い。約2%を追加） |
 | X31〜X40 | 件数（ポアソン分布の整数） |
 | X41〜X50 | 目的変数と無関係なノイズ |
 
@@ -33,6 +33,17 @@
 - 効く説明変数: Yk には Xk・X(10+k)・X(20+k)・X(30+k) が効く
   （係数の符号・大きさも目的変数ごとに違う）
 - Y3・Y6・Y9 には緩やかな上昇トレンドがある
+
+欠損: 目的変数・説明変数の両方に、散発的な欠損と連続した欠損を入れる（`add_missing`）。
+値を作った後に「観測できなかった」ものとして欠損にするため、欠損の日も目的変数の値は
+（観測されない）説明変数の値から作られている。欠損は学習期間・テスト期間の両方に入る。
+
+| 対象 | 散発的な欠損 | 連続した欠損 |
+|---|---|---|
+| 目的変数（種類ごとに別々） | 約2% | 学習期間に2か所・テスト期間に1か所（各3〜35日） |
+| 説明変数（列ごと。同じ日付の行で同じ） | 約1% | 学習に0〜2か所・テストに0〜1か所（各3〜30日） |
+
+テストの正解（`dummy_x50_test_answer.csv`）の `Y` にも欠損がある（予測の評価からは除く）。
 
 使い方:
     uv run python scripts/generate_dummy_x50.py
@@ -155,6 +166,74 @@ def _make_target(
     return y
 
 
+def _missing_mask(
+    days: int,
+    test_start_index: int,
+    rate: float,
+    n_train_blocks: int,
+    n_test_blocks: int,
+    max_length: int,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """欠損にする日（True）を返す（散発的な欠損 + 連続した欠損）。
+
+    Args:
+        days: 日数。
+        test_start_index: テスト期間の最初の日の位置（連続した欠損を学習・テストに分けて置く）。
+        rate: 散発的な欠損の割合。
+        n_train_blocks: 学習期間に置く連続した欠損の数。
+        n_test_blocks: テスト期間に置く連続した欠損の数。
+        max_length: 連続した欠損の最大日数（最小は3日）。
+        rng: 乱数生成器。
+
+    Returns:
+        欠損にする日を True にした配列。
+    """
+    mask = rng.random(days) < rate
+    for low, high, n_blocks in (
+        (0, test_start_index, n_train_blocks),
+        (test_start_index, days, n_test_blocks),
+    ):
+        for _ in range(n_blocks):
+            length = int(rng.integers(3, max_length + 1))
+            if high - low <= length:
+                continue
+            start = int(rng.integers(low, high - length))
+            mask[start : start + length] = True
+    return mask
+
+
+def add_missing(frame: pd.DataFrame, test_start: str, seed: int = 0) -> pd.DataFrame:
+    """wide 型のダミーデータの目的変数・説明変数に、散発的な欠損と連続した欠損を入れる。
+
+    値を作った後に欠損にする（欠損の日も、目的変数は説明変数の真の値から作られている）。
+    欠損の位置には値の生成とは別の乱数を使うため、欠損でない値は欠損を入れる前と同じ。
+
+    Args:
+        frame: `make_dummy_frame` の結果（wide 型）。
+        test_start: テスト期間の開始日（連続した欠損を学習・テストの両方に置くために使う）。
+        seed: 欠損の位置を決める乱数のシード。
+
+    Returns:
+        欠損を入れた DataFrame（入力は変更しない）。
+    """
+    rng = np.random.default_rng([seed, 1])
+    days = len(frame)
+    test_start_index = int((frame["date"] < pd.Timestamp(test_start)).sum())
+    updates: dict[str, pd.Series] = {}
+    # 目的変数: 種類ごとに別々の日を欠損にする
+    for col in TARGET_COLS:
+        mask = _missing_mask(days, test_start_index, 0.02, 2, 1, 35, rng)
+        updates[col] = frame[col].mask(mask)
+    # 説明変数: 日付ごとの値なので、long 型にすると同じ日付の全種類の行で欠損になる
+    feature_cols = [c for c in frame.columns if c not in ("date", *TARGET_COLS)]
+    for col in feature_cols:
+        n_train_blocks, n_test_blocks = int(rng.integers(0, 3)), int(rng.integers(0, 2))
+        mask = _missing_mask(days, test_start_index, 0.01, n_train_blocks, n_test_blocks, 30, rng)
+        updates[col] = frame[col].mask(mask)
+    return frame.assign(**updates)
+
+
 def to_long(frame: pd.DataFrame) -> pd.DataFrame:
     """wide 型（列 `date`, `Y1`〜`Y10`, `X1`〜`X50`）を long 型にする。
 
@@ -211,6 +290,8 @@ def main(argv: list[str] | None = None) -> None:
     days = (pd.Timestamp(args.end) - pd.Timestamp(args.start)).days + 1
     # 学習・テストを1本の系列として作ってから分ける（テスト期間も同じ過程の続きになる）
     frame = make_dummy_frame(args.start, days, args.seed)
+    # 目的変数・説明変数に欠損を入れる（散発的な欠損と連続した欠損。学習・テストの両方）
+    frame = add_missing(frame, args.test_start, args.seed)
     parts = zip(
         (TRAIN_FILENAME, TEST_FILENAME, ANSWER_FILENAME),
         split_train_test(frame, args.test_start),
@@ -220,9 +301,11 @@ def main(argv: list[str] | None = None) -> None:
         output = ensure_parent_dir(args.output_dir / filename)
         part.to_csv(output, index=False, date_format="%Y-%m-%d")
         dates = part["date"]
+        missing = part.drop(columns=["date", CAT_COL]).isna().mean()
         print(
             f"保存: {output}（{len(part)}行 × {part.shape[1]}列、"
-            f"{dates.min():%Y-%m-%d}〜{dates.max():%Y-%m-%d}）"
+            f"{dates.min():%Y-%m-%d}〜{dates.max():%Y-%m-%d}、"
+            f"欠損率 {missing.min():.1%}〜{missing.max():.1%}）"
         )
 
 

@@ -71,8 +71,15 @@ class TargetFeatureBuilder:
         lag1 = f"{target}_lag_1"
         group_by = self.series_col
         self._steps: list[Any] = [LagFeatureGenerator(target, config.lags, group_by=group_by)]
+        min_periods = config.rolling_min_periods
         self._steps += [
-            MovingAverageTransformer(lag1, w, group_by=group_by) for w in config.rolling_windows
+            MovingAverageTransformer(
+                lag1,
+                w,
+                min_periods=None if min_periods is None else min(min_periods, w),
+                group_by=group_by,
+            )
+            for w in config.rolling_windows
         ]
         if config.rate_of_change:
             self._steps.append(RateOfChangeTransformer(lag1, 1, group_by=group_by))
@@ -402,6 +409,8 @@ def recursive_backtest(
     `target_transform` を指定すると、モデルは変換後の目的変数を学習・再帰予測し、
     予測値を元の尺度に戻してから評価する（OOF・テスト予測も元の尺度）。
     差分が計算できない各系列の先頭行は学習から除外するが、データの行・CV分割は変えない。
+    目的変数が欠損の行も同様に、学習には使わず履歴（ラグの元。欠損のまま）としてだけ残し、
+    評価からも除く（`Metric` が正解の欠損を除く）。
 
     Args:
         config: 実験設定（`forecast` 必須）。
@@ -540,11 +549,11 @@ def recursive_backtest(
 def _horizon_scores(
     y: np.ndarray, pred: np.ndarray, steps: np.ndarray, metric_names: list[str]
 ) -> pd.DataFrame:
-    """予測ステップごとに全foldを通した指標を計算する。"""
+    """予測ステップごとに全foldを通した指標を計算する（`n` は正解が欠損でない、評価した行数）。"""
     rows = []
     for h in np.unique(steps[steps > 0]):
         mask = steps == h
-        row: dict[str, Any] = {"step": int(h), "n": int(mask.sum())}
+        row: dict[str, Any] = {"step": int(h), "n": int(np.isfinite(y[mask]).sum())}
         for name in metric_names:
             try:
                 row[name] = get_metric(name)(y[mask], pred[mask])

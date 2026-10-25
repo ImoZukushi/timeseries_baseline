@@ -23,6 +23,9 @@
   （検証期間の実測値を使わない）。
 - 正解ファイル（`data/synthetic/x50/dummy_x50_test_answer.csv`。列 `date`, `Y_cat`, `Y`）は、
   テスト予測が終わった後の評価にだけ使う。
+- 欠損: 目的変数が欠損の行は、学習（CV・テスト予測用の学習）・評価（CV・テスト）から除く。
+  行は履歴として残し、ラグ・移動平均は欠損のまま作る（移動平均は窓内の観測値だけで平均する。
+  `ROLLING_MIN_PERIODS`）。説明変数・目的変数の特徴量の欠損は埋めず、モデルの欠損処理に任せる。
 
 出力:
     - 種類ごと（`outputs/experiments/x50_{モデル名}_{種類}/{実行日時}/`）:
@@ -62,7 +65,7 @@ import pandas as pd  # noqa: E402
 from modeling.config import ExperimentConfig  # noqa: E402
 from modeling.dataset import Dataset  # noqa: E402
 from modeling.experiment import ExperimentResult, prepare_dataset, run_experiment  # noqa: E402
-from modeling.forecasting import ForecastCVResult  # noqa: E402
+from modeling.forecasting import ForecastCVResult, make_builder  # noqa: E402
 from modeling.metrics import get_metric  # noqa: E402
 from modeling.tracking import MLflowTracker, NullTracker, Tracker  # noqa: E402
 from util.csv_io import read_csv_auto  # noqa: E402
@@ -80,6 +83,10 @@ TARGET_COL = "Y"  # 目的変数の値の列（学習データのCSVでは対数
 RAW_SUFFIX = "_raw"  # 学習データのCSVの、元の尺度の目的変数の列名の接尾辞（`Y_raw`）
 PRED_COL = "pred"  # 種類ごとのテスト予測の表の、予測値の列
 ACTUAL_COL = "actual"  # 同じく、正解の列（正解ファイルがある場合）
+
+# 移動平均に必要な、窓内の観測値（欠損でない値）の最小数。003 の前処理と同じ値にする
+# （違えば `prepare` で「CSVの値と一致しない」エラーになる）
+ROLLING_MIN_PERIODS = 1
 
 # 検証期間の開始日（時系列CVの各foldの境目）。最後の fold は学習データの最終日まで
 DEFAULT_CUTOFFS = ["2023-07-01", "2024-01-01"]
@@ -435,6 +442,8 @@ def make_config(
             "forecast": {
                 "lags": spec.lags,
                 "rolling_windows": spec.rolling_windows,
+                # 目的変数に欠損があっても、窓内の観測値だけで移動平均を作る
+                "rolling_min_periods": ROLLING_MIN_PERIODS,
                 "rate_of_change": spec.rate_of_change,
                 # 目的変数は対数で学習・予測し、評価・出力の前に元の尺度に戻す
                 # （003 の前処理と同じ変換）
@@ -457,7 +466,8 @@ def prepare(config: ExperimentConfig, inputs: Inputs, category: str) -> Dataset:
     確かめること:
         - その種類の行だけで作り直した目的変数の特徴量が、学習データのCSVの値（種類ごとに
           作ったもの）と一致する（CSVの特徴量も過去の値だけから作られている、かつ定義が同じ）。
-          作り直せない先頭の行（過去の日数が足りない）は欠損になる。
+          CSV には各種類の先頭の日（過去の日数が足りない日）が無いため、CSVの先頭から
+          `lookback` 行は作り直しても値がそろわず、比べない。欠損の位置も一致することを確かめる。
         - モデルの特徴量に、目的変数（`Y`・`Y_raw`）や種類の列が入っていない。
         - CVの各foldで、学習期間がすべて検証期間より前にある。
         - テストデータに目的変数が無い（再帰予測は予測値だけを履歴に足す）。
@@ -474,9 +484,15 @@ def prepare(config: ExperimentConfig, inputs: Inputs, category: str) -> Dataset:
     original = inputs.train.loc[inputs.train[CAT_COL] == category, spec.columns].reset_index(
         drop=True
     )
-    comparable = rebuilt.notna()
+    # CSVの先頭 lookback 行は、CSVに無い過去の日を使うため作り直しても一致しない
+    n_head = min(make_builder(config).lookback, len(rebuilt))
+    comparable = np.arange(len(rebuilt)) >= n_head
     if not np.allclose(
-        rebuilt[comparable], original[comparable], rtol=1e-9, atol=1e-9, equal_nan=True
+        rebuilt[comparable].to_numpy(dtype=float),
+        original[comparable].to_numpy(dtype=float),
+        rtol=1e-9,
+        atol=1e-9,
+        equal_nan=True,
     ):
         raise LeakageError(
             f"{target}: 作り直した目的変数の特徴量が、学習データのCSVの値と一致しません"
@@ -486,12 +502,19 @@ def prepare(config: ExperimentConfig, inputs: Inputs, category: str) -> Dataset:
     ]
     if mixed:
         raise LeakageError(f"{target}: モデルの特徴量に目的変数・種類の列があります: {mixed}")
-    n_head = int((~comparable.all(axis=1)).sum())
     logger.info(
-        "%s: 目的変数の特徴量はCSVの値と一致（先頭 %d行は過去の日数が足りないため欠損）",
+        "%s: 目的変数の特徴量はCSVの値と一致（先頭 %d行は過去の日数が足りないため比べない）",
         target,
         n_head,
     )
+    n_missing = int(np.isnan(dataset.y).sum())
+    if n_missing:
+        logger.info(
+            "%s: 目的変数が欠損の %d行（%.1f%%）は学習・評価に使わない（履歴としては残す）",
+            target,
+            n_missing,
+            100 * n_missing / len(dataset.y),
+        )
 
     dates = pd.to_datetime(train[DATE_COL])
     for i, (train_idx, valid_idx) in enumerate(dataset.folds):
@@ -600,8 +623,13 @@ def evaluate_test(
 ) -> tuple[pd.DataFrame, float]:
     """1つの種類のテスト予測を正解（long 型。列 `date`, `Y_cat`, `Y`）と比べ、MAE を返す。
 
+    正解の値が欠損の日は MAE から除く（`actual` は欠損のまま残す）。
+
     Returns:
         (正解の列 `actual` を付けたテスト予測, MAE)。
+
+    Raises:
+        ValueError: 正解ファイルに、テスト期間の一部の日付の行が無い場合。
     """
     target = category
     rows = answer[answer[CAT_COL] == category]
@@ -610,11 +638,20 @@ def evaluate_test(
         on=DATE_COL,
         how="left",
         validate="one_to_one",
+        indicator=True,
     )
-    if merged[ACTUAL_COL].isna().any():
+    if (merged["_merge"] != "both").any():
         raise ValueError(f"正解ファイルに、{target} のテスト期間の一部の日付がありません")
+    merged = merged.drop(columns="_merge")
     mae = get_metric("mae")(merged[ACTUAL_COL].to_numpy(), merged[PRED_COL].to_numpy())
-    logger.info("%s: テスト MAE %.4f（%d日）", target, mae, len(merged))
+    n_observed = int(merged[ACTUAL_COL].notna().sum())
+    logger.info(
+        "%s: テスト MAE %.4f（%d日。正解が欠損の %d日を除く）",
+        target,
+        mae,
+        n_observed,
+        len(merged) - n_observed,
+    )
     return merged, mae
 
 
@@ -723,7 +760,8 @@ def plot_test_result(
     caption = "学習データの最終日の翌日から、予測値を次のラグに使う再帰予測で1日ずつ予測した。"
     if has_answer:
         actual, pred = predictions[ACTUAL_COL], predictions[PRED_COL]
-        mae = float(np.mean(np.abs(actual - pred)))
+        # 正解が欠損の日は MAE から除く
+        mae = float(np.nanmean(np.abs(actual - pred)))
         ax = axes["scatter"]
         ax.scatter(actual, pred, s=10, alpha=0.6)
         low, high = float(min(actual.min(), pred.min())), float(max(actual.max(), pred.max()))
@@ -764,7 +802,12 @@ def save_target_outputs(run: TargetRun) -> list[Path]:
     if run.test_mae is not None:
         paths.append(out / "test_scores.csv")
         scores = pd.DataFrame(
-            {"metric": ["mae"], "value": [run.test_mae], "n": [len(run.predictions)]}
+            {
+                "metric": ["mae"],
+                "value": [run.test_mae],
+                # 評価した日数（正解が欠損の日を除く）
+                "n": [int(run.predictions[ACTUAL_COL].notna().sum())],
+            }
         )
         scores.to_csv(paths[-1], index=False)
     figures = out / "figures"
@@ -849,7 +892,8 @@ def summary_frame(runs: Sequence[TargetRun]) -> pd.DataFrame:
         row: dict[str, object] = {
             CAT_COL: run.category,
             "cv_oof_mae": cv.oof_scores["mae"],
-            "cv_relative_mae": cv.oof_scores["mae"] / float(np.mean(run.dataset.y[predicted])),
+            # 正解が欠損の行は除いて平均する
+            "cv_relative_mae": cv.oof_scores["mae"] / float(np.nanmean(run.dataset.y[predicted])),
         }
         if isinstance(cv, ForecastCVResult):
             row["cv_onestep_mae"] = cv.onestep_oof_scores["mae"]

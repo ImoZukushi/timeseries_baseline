@@ -377,6 +377,9 @@ class ForecastConfig(_StrictModel):
         lags: 目的変数のラグ（1以上）。`{target}_lag_{k}` 列になる。
         rolling_windows: `{target}_lag_1` の後方移動平均の窓幅
             （t-1 から過去w期の平均。現在値 y_t を含まないためリークしない）。
+        rolling_min_periods: 移動平均の計算に必要な、窓内の観測値（欠損でない値）の最小数
+            （Noneなら窓幅と同じ = 窓内に1つでも欠損があればNaN）。目的変数に欠損がある場合に
+            1 などにすると、窓内の観測値だけで平均する。窓幅より大きい値は窓幅として扱う。
         rate_of_change: `{target}_lag_1` の前期比（(y_{t-1} - y_{t-2}) / y_{t-2}）を加えるか。
         horizon: バックテストで評価する最大ステップ数（Noneなら検証期間全体）。
         clip: 予測値の範囲制限（誤差の暴走を防ぐ。例: 非負の目的変数なら min=0）。
@@ -394,6 +397,7 @@ class ForecastConfig(_StrictModel):
     series_col: str | None = None
     lags: list[int] = Field(min_length=1)
     rolling_windows: list[int] = Field(default_factory=list)
+    rolling_min_periods: int | None = Field(default=None, ge=1)
     rate_of_change: bool = False
     horizon: int | None = Field(default=None, ge=1)
     clip: ClipConfig = Field(default_factory=ClipConfig)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 import train_predict_x50 as base
 import train_predict_x50_global as gm
@@ -61,3 +62,13 @@ def test_make_config_uses_category_as_series() -> None:
     assert config.data.target == "Y"
     with pytest.raises(ValueError, match="モデル"):
         gm.make_config("random_forest", spec, 3)
+
+
+def test_prepare_with_missing_values(tmp_path: Path) -> None:
+    train, test = _frames(missing=True)
+    inputs = base.load_inputs(*_write(tmp_path, train, test))
+    config = gm.make_config("lightgbm", inputs.spec, len(CATEGORIES), cutoffs=["2024-03-01"])
+    # 欠損があっても、系列ごとに作り直した特徴量はCSVと一致する
+    dataset = gm.prepare(config, inputs)
+    assert np.isnan(dataset.y).sum() == train["Y"].isna().sum()
+    assert config.forecast is not None and config.forecast.rolling_min_periods == 1

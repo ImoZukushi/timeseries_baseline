@@ -12,14 +12,30 @@ import train_predict_x50 as tp
 CATEGORIES = ("Y1", "Y2")
 
 
-def _frames(n_train: int = 90, n_test: int = 10) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """003 のノートブックの出力と同じ形（long 型）の、小さな学習・テストデータを作る（種類2つ）。"""
+# 目的変数の特徴量の作成に必要な過去の日数（ラグ 1・2、移動平均 3、前日比）
+LOOKBACK = 3
+
+
+def _frames(
+    n_train: int = 90, n_test: int = 10, missing: bool = False
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """003 のノートブックの出力と同じ形（long 型）の、小さな学習・テストデータを作る（種類2つ）。
+
+    `missing=True` なら、目的変数（種類ごとに別の日）と説明変数に、
+    散発的な欠損と連続した欠損を入れる。
+    """
     rng = np.random.default_rng(0)
     dates = pd.date_range("2024-01-01", periods=n_train + n_test, freq="D")
     x1 = rng.normal(size=n_train + n_test)
+    if missing:
+        x1[[10, 50, 51, 52, n_train + 2]] = np.nan
     parts = []
     for k, category in enumerate(CATEGORIES):
         y_raw = 50 * (k + 1) + np.cumsum(rng.normal(size=n_train + n_test))
+        if missing:
+            # 散発的な欠損と、連続した欠損（移動平均の窓より長い）
+            y_raw[[7 + k, 30 + k]] = np.nan
+            y_raw[60 + k : 66 + k] = np.nan
         y = pd.Series(np.log(y_raw))
         lag1 = y.shift(1)
         parts.append(
@@ -33,7 +49,8 @@ def _frames(n_train: int = 90, n_test: int = 10) -> tuple[pd.DataFrame, pd.DataF
                     # （modeling.forecasting と同じ定義）
                     "Y_lag_1": lag1,
                     "Y_lag_2": y.shift(2),
-                    "Y_lag_1_ma_3": lag1.rolling(3).mean(),
+                    # 窓内の観測値だけで平均する（`ROLLING_MIN_PERIODS = 1`）
+                    "Y_lag_1_ma_3": lag1.rolling(3, min_periods=1).mean(),
                     "Y_lag_1_roc_1": (lag1 - lag1.shift(1)) / lag1.shift(1),
                     "date_month": dates.month,
                     "X1": x1,
@@ -42,7 +59,9 @@ def _frames(n_train: int = 90, n_test: int = 10) -> tuple[pd.DataFrame, pd.DataF
         )
     full = tp.sort_long(pd.concat(parts, ignore_index=True), list(CATEGORIES))
     is_train = full["date"] < dates[n_train]
-    train = full[is_train].dropna().reset_index(drop=True)
+    # 各種類の先頭（過去の日数が足りない日）は除く。目的変数が欠損の行は残す
+    is_head = full["date"] < dates[LOOKBACK]
+    train = full[is_train & ~is_head].reset_index(drop=True)
     test = full.loc[~is_train, ["date", "Y_cat", "date_month", "X1"]].reset_index(drop=True)
     return train, test
 
@@ -136,3 +155,35 @@ def test_make_config_rejects_unknown_model() -> None:
     config = tp.make_config("xgboost", spec, "Y1")
     assert config.name == "x50_xgboost_Y1"
     assert config.data.target == "Y"
+
+
+def test_missing_targets_are_kept_as_history_and_skipped_in_evaluation(tmp_path: Path) -> None:
+    train, test = _frames(missing=True)
+    inputs = tp.load_inputs(*_write(tmp_path, train, test))
+    config = tp.make_config("lightgbm", inputs.spec, "Y1", cutoffs=["2024-03-01"])
+    # 目的変数・説明変数に欠損があっても、作り直した特徴量はCSVと一致する（欠損の位置も）
+    dataset = tp.prepare(config, inputs, "Y1")
+    assert np.isnan(dataset.y).sum() == train.loc[train["Y_cat"] == "Y1", "Y"].isna().sum()
+    # 正解が欠損の日は、テストの MAE から除く
+    predictions = pd.DataFrame({"date": test["date"].unique(), "pred": 50.0})
+    answer = pd.DataFrame(
+        {"date": predictions["date"], "Y_cat": "Y1", "Y": [np.nan, 52.0, 47.0, *[50.0] * 7]}
+    )
+    merged, mae = tp.evaluate_test(predictions, answer, "Y1")
+    assert mae == pytest.approx(5 / 9)
+    assert merged["actual"].isna().sum() == 1
+    # 正解の日付が足りない場合はエラー
+    with pytest.raises(ValueError, match="日付"):
+        tp.evaluate_test(predictions, answer.iloc[1:], "Y1")
+
+
+def test_prepare_rejects_different_rolling_min_periods(tmp_path: Path) -> None:
+    train, test = _frames(missing=True)
+    # 003 と違う定義（窓内に欠損があれば欠損）で作った移動平均は、作り直した値と一致しない
+    train["Y_lag_1_ma_3"] = train.groupby("Y_cat")["Y_lag_1"].transform(
+        lambda s: s.rolling(3).mean()
+    )
+    inputs = tp.load_inputs(*_write(tmp_path, train, test))
+    config = tp.make_config("lightgbm", inputs.spec, "Y1", cutoffs=["2024-03-01"])
+    with pytest.raises(tp.LeakageError, match="一致しません"):
+        tp.prepare(config, inputs, "Y1")

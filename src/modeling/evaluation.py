@@ -86,7 +86,7 @@ def save_evaluation_outputs(
     out = output_dir / EVALUATION_DIR
     out.mkdir(parents=True, exist_ok=True)
     saver = _Saver(out, config.name)
-    rows = _predicted_rows(cv_result)
+    rows = _predicted_rows(cv_result, dataset.y)
     y, pred = dataset.y[rows], cv_result.oof_pred[rows]
     note = f"OOF予測（各foldのモデルが学習に使っていない検証データへの予測）n={rows.size:,}"
 
@@ -137,14 +137,24 @@ class _Saver:
         self.paths.append(path)
 
 
-def _predicted_rows(cv_result: CVResult) -> np.ndarray:
-    """OOF予測がある行（どのfoldの検証にも入らない行・予測が欠損の行を除く）。"""
+def _predicted_rows(cv_result: CVResult, dataset_y: np.ndarray) -> np.ndarray:
+    """OOF予測がある行（どのfoldの検証にも入らない行・予測が欠損の行・正解が欠損の行を除く）。
+
+    正解が欠損の行（再帰予測で履歴としてだけ残した行）は残差が計算できないため除く。
+    時刻順の診断（自己相関など）では、除いた行を詰めて並べる。
+    """
     pred = cv_result.oof_pred
     finite = np.isfinite(pred if pred.ndim == 1 else pred.sum(axis=1))
-    return np.flatnonzero((cv_result.fold_ids >= 0) & finite)
+    return np.flatnonzero((cv_result.fold_ids >= 0) & finite & _observed(dataset_y))
 
 
 # --- 回帰・時系列 ----------------------------------------------------------------------
+
+
+def _observed(y: np.ndarray) -> np.ndarray:
+    """正解が欠損でない行（分類のラベルなど浮動小数でない正解は全行）。"""
+    y = np.asarray(y)
+    return ~np.isnan(y) if y.dtype.kind == "f" else np.ones(len(y), dtype=bool)
 
 
 def _save_regression(
@@ -271,7 +281,7 @@ def _save_time_series_diagnostics(
     test_frames, lb_frames = [], []
     for residual_type, pred in _residual_sets(cv_result).items():
         suffix, label = _RESIDUAL_TYPES[residual_type]
-        rows = np.flatnonzero((cv_result.fold_ids >= 0) & np.isfinite(pred))
+        rows = np.flatnonzero((cv_result.fold_ids >= 0) & np.isfinite(pred) & _observed(dataset.y))
         if rows.size == 0:
             continue
         series_rows = _series_rows(config, dataset, rows) or {"all": rows}

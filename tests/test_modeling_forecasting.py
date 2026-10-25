@@ -127,6 +127,21 @@ def test_target_features_per_series_and_order_preserved() -> None:
     assert builder.lookback == 1
 
 
+def test_target_features_with_missing_values() -> None:
+    frame = pd.DataFrame({"t": [1, 2, 3, 4, 5], "y": [1.0, np.nan, 3.0, 4.0, 5.0]})
+    # 既定（min_periods = 窓幅）では、窓内に欠損があると移動平均も欠損
+    out = _builder(lags=[1], rolling_windows=[3]).build(frame)
+    assert row_at(out, 3)["y_lag_1_ma_3"] is None
+    # rolling_min_periods=1 なら、窓内の観測値だけで平均する（y_{t-1}, y_{t-3} の平均）
+    out = _builder(lags=[1], rolling_windows=[3], rolling_min_periods=1).build(frame)
+    assert row_at(out, 3)["y_lag_1_ma_3"] == pytest.approx(2.0)
+    # ラグは欠損のまま（埋めない）
+    assert row_at(out, 2)["y_lag_1"] is None
+    # 窓幅より大きい min_periods は窓幅として扱う
+    out = _builder(lags=[1], rolling_windows=[2], rolling_min_periods=5).build(frame)
+    assert row_at(out, 4)["y_lag_1_ma_2"] == pytest.approx(3.5)
+
+
 def test_lookback() -> None:
     assert _builder(lags=[1, 3], rolling_windows=[5]).lookback == 5
     assert _builder(lags=[1], rate_of_change=True).lookback == 2
@@ -272,6 +287,35 @@ def test_backtest_horizon_truncation_and_scores() -> None:
     assert hs["step"].pipe(as_list) == [1, 2, 3, 4, 5]
     assert hs["n"].pipe(as_list) == [4] * 5
     assert set(hs.columns) == {"step", "n", "rmse", "mae"}
+
+
+def test_backtest_skips_missing_targets() -> None:
+    raw = _raw_config()
+    raw["forecast"]["rolling_min_periods"] = 1
+    config = ExperimentConfig.model_validate(raw)
+    frame = _panel()
+    # 散発的な欠損と、検証期間にかかる連続した欠損を入れる
+    missing = np.zeros(len(frame), dtype=bool)
+    missing[::17] = True
+    missing[(frame["date"] >= "2024-03-10") & (frame["date"] < "2024-03-20")] = True
+    frame = frame.assign(y=frame["y"].mask(missing))
+    ds = prepare_dataset(config, frame)
+    assert ds.frame is not None and np.isnan(ds.y).sum() == missing.sum()
+    result = recursive_backtest(config, ds.frame, ds.X, ds.y, ds.folds)
+    predicted = result.fold_ids >= 0
+    # 欠損の日も再帰予測はする（予測値を次のラグに使う）。評価は観測値の行だけで行う
+    assert np.isfinite(result.oof_pred[predicted]).all()
+    assert all(np.isfinite(s) for s in result.fold_scores["mae"])
+    observed = predicted & ~missing
+    mae = np.mean(np.abs(ds.y[observed] - result.oof_pred[observed]))
+    assert result.oof_scores["mae"] == pytest.approx(mae)
+    assert result.horizon_scores["n"].sum() == observed.sum()
+    # 再帰予測でない実験では、目的変数の欠損はエラーのまま
+    with pytest.raises(ValueError, match="欠損"):
+        prepare_dataset(
+            _config(task="regression", forecast=None, cv={"method": "kfold", "n_splits": 2}),
+            frame,
+        )
 
 
 def test_backtest_recursive_error_exceeds_one_step_error() -> None:
