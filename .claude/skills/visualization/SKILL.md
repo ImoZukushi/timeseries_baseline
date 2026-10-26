@@ -34,19 +34,20 @@ sns.set_theme(
 
 ### Japanese text
 
-If any text (titles, labels, legends, annotations) contains Japanese, configure a CJK-capable font, **otherwise characters render as tofu (□□□)**.
+If any text (titles, labels, legends, annotations) contains Japanese, configure a Japanese font, **otherwise characters render as tofu (□□□)**.
 
-Preferred approach (cross-platform):
-
-```python
-import japanize_matplotlib  # uv add japanize-matplotlib
-```
-
-Alternative (set an installed CJK font explicitly):
+The project standard font is **IPAexGothic**. Call `ensure_japanese_font()` from `src/util/plotting.py` (after `sns.set_theme()`, which resets fonts):
 
 ```python
-plt.rcParams["font.family"] = "Noto Sans CJK JP"  # or "IPAexGothic", "Hiragino Sans", "Yu Gothic"
+from util.plotting import ensure_japanese_font
+
+ensure_japanese_font()  # IPAexGothic を設定する（sns.set_theme の後に呼ぶ）
 ```
+
+- IPAexGothic (`ipaexg.ttf`) is bundled with the `matplotlib-fontja` dependency, so no OS font installation is needed (`uv sync` is enough).
+- Do **not** hard-code `plt.rcParams["font.family"]` or use `japanize_matplotlib` (it does not import on Python 3.12).
+- If IPAexGothic is unavailable, `ensure_japanese_font()` warns and falls back to an installed Japanese font (Meiryo, Yu Gothic, Noto Sans CJK JP, ...).
+- Drawing functions in `eda`, `evaluation`, and `modeling` already call it internally.
 
 ## Figure Creation
 
@@ -127,7 +128,7 @@ Before finalizing a chart, verify:
 - [ ] **Sample / filter note** when data is subsetted (e.g. "n=1,234, 2024年1月〜6月").
 - [ ] **Bar charts** start y-axis at 0; other chart types use sensible limits.
 - [ ] **Legend** present when multiple series; placement does not overlap data.
-- [ ] **Japanese text** renders correctly (japanize-matplotlib or CJK font configured).
+- [ ] **Japanese text** renders correctly (`ensure_japanese_font()` called → IPAexGothic).
 - [ ] **Saved** to `outputs/figures/` with descriptive filename, followed by `plt.close(fig)`.
 
 ## Example
@@ -136,9 +137,10 @@ Before finalizing a chart, verify:
 from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
-import japanize_matplotlib  # noqa: F401  # 日本語フォント有効化
+from util.plotting import ensure_japanese_font
 
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.2)
+ensure_japanese_font()  # 日本語フォント（IPAexGothic）を有効化。set_theme の後に呼ぶ
 
 Path("outputs/figures").mkdir(parents=True, exist_ok=True)
 

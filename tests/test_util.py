@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 import pytest
+from matplotlib import font_manager
 
 from util import csv_io, paths, plotting
 
@@ -60,11 +61,27 @@ def test_sanitize_filename_component_leaves_safe_text_unchanged() -> None:
 # --- plotting --------------------------------------------------------------
 
 
-def test_ensure_japanese_font_sets_meiryo() -> None:
+def test_ensure_japanese_font_sets_ipaexgothic() -> None:
     plt.rcParams["font.family"] = "DejaVu Sans"
-    plotting.ensure_japanese_font()
-    assert plt.rcParams["font.family"] == ["Meiryo"]
+    # matplotlib-fontja に同梱の IPAexGothic が標準（OS にインストールされていなくても使える）
+    assert plotting.ensure_japanese_font() == "IPAexGothic"
+    assert plt.rcParams["font.family"] == ["IPAexGothic"]
     assert plt.rcParams["axes.unicode_minus"] is False
+    # 実際に IPAexGothic のフォントファイルが使われる（見つからず別のフォントに置き換わらない）
+    path = font_manager.findfont("IPAexGothic", fallback_to_default=False)
+    assert Path(path).name == "ipaexg.ttf"
+
+
+def test_ensure_japanese_font_falls_back_with_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    plotting._resolve_japanese_font.cache_clear()
+    monkeypatch.setattr(plotting, "JAPANESE_FONT", "存在しないフォント")
+    monkeypatch.setattr(plotting, "FALLBACK_JAPANESE_FONTS", ("IPAexGothic",))
+    try:
+        with pytest.warns(UserWarning, match="存在しないフォント"):
+            assert plotting.ensure_japanese_font() == "IPAexGothic"
+    finally:
+        # 他のテストに影響しないよう、探した結果を消しておく
+        plotting._resolve_japanese_font.cache_clear()
 
 
 def test_add_caption_adds_text_to_figure() -> None:

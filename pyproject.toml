@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "lightgbm>=4.7.0",
     "matplotlib>=3.11.2",
+    "matplotlib-fontja>=1.1.0",
     "mlflow>=3.16.1",
     "openpyxl>=3.1.5",
     "optuna>=5.0.0",
@@ -64,7 +65,7 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = [
     "lightgbm.*", "xgboost.*", "shap.*", "mlflow.*", "optuna.*", "scipy.*", "skorch.*", "torch.*",
-    "plotly.*", "pyarrow.*",
+    "plotly.*", "pyarrow.*", "matplotlib_fontja.*",
 ]
 ignore_missing_imports = true
 

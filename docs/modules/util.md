@@ -83,7 +83,7 @@ daily_max = pd.concat(partial).groupby(level=0).max()
 
 | 関数 | 内容 |
 |---|---|
-| `ensure_japanese_font()` | 日本語フォント（Windows標準の Meiryo）とマイナス記号の表示を設定する。`sns.set_theme()` はフォントを初期化するので、テーマ設定の**後に**呼ぶ |
+| `ensure_japanese_font()` | 日本語フォント（標準は IPAexGothic）とマイナス記号の表示を設定し、使ったフォント名を返す。`sns.set_theme()` はフォントを初期化するので、テーマ設定の**後に**呼ぶ |
 | `add_caption(fig, text)` | 図の下部に注記（データ期間・件数など）を入れる |
 
 ```python
@@ -102,5 +102,10 @@ plt.close(fig)
 ```
 
 `eda`・`evaluation`・`modeling` の描画関数は内部で `ensure_japanese_font()` を呼ぶので、呼び出し側での設定は不要です。
-japanize-matplotlib は Python 3.12 で import できない（distutils 依存）ため使っていません。Meiryo の無い環境（macOS・Linux）では、
-`plt.rcParams["font.family"]` に手元の日本語フォント（Hiragino Sans・Noto Sans CJK JP など）を指定してください。
+日本語フォントは **IPAexGothic** を標準にしています。
+
+- フォントファイル（`ipaexg.ttf`）は、依存パッケージ `matplotlib-fontja` に同梱されたものを使います。
+  OS にインストールする必要はなく、`uv sync` だけで Windows・macOS・Linux のどれでも同じフォントになります。
+- `matplotlib-fontja` は japanize-matplotlib の後継です（japanize-matplotlib は distutils に依存しているため、Python 3.12 では import できません）。
+- IPAexGothic が見つからない環境では、警告を出したうえで、手元の日本語フォントを使います（Meiryo・Yu Gothic・Noto Sans CJK JP などの順に探します）。
+- フォントのライセンス（IPA フォントライセンス v1.0）は、パッケージ内の `matplotlib_fontja/fonts/` にあります。

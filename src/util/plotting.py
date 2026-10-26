@@ -2,19 +2,74 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
+import warnings
+
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
+
+# 図の日本語フォント（プロジェクトの標準）。依存パッケージ matplotlib-fontja に同梱されている
+JAPANESE_FONT = "IPAexGothic"
+# IPAexGothic が使えない環境で代わりに使う日本語フォント（見つかった最初のもの）
+FALLBACK_JAPANESE_FONTS = (
+    "Meiryo",
+    "Yu Gothic",
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "Hiragino Sans",
+    "IPAGothic",
+)
 
 
-def ensure_japanese_font() -> None:
-    """日本語フォントをmatplotlibに設定する。
+@functools.cache
+def _resolve_japanese_font() -> str:
+    """使う日本語フォントの名前を決める（最初の1回だけ探す）。
 
-    japanize-matplotlib は distutils 依存のためPython 3.12（setuptools未導入環境）では
-    importできないので使用せず、Windowsに標準搭載されている日本語フォントを直接指定する。
+    matplotlib-fontja を import すると、同梱の IPAexGothic（ipaexg.ttf）が matplotlib に登録される。
+    登録できない・見つからない場合は警告を出し、`FALLBACK_JAPANESE_FONTS` の最初に
+    見つかったものを使う。
+    """
+    # import 時に同梱の IPAexGothic を登録する（入っていなければ代わりのフォントを探す）
+    with contextlib.suppress(ImportError):
+        import matplotlib_fontja  # noqa: F401
+    available = {font.name for font in font_manager.fontManager.ttflist}
+    if JAPANESE_FONT in available:
+        return JAPANESE_FONT
+    fallback = next((name for name in FALLBACK_JAPANESE_FONTS if name in available), None)
+    if fallback is None:
+        warnings.warn(
+            f"日本語フォント {JAPANESE_FONT} も代わりのフォントも見つかりません。"
+            "図の日本語が表示されない可能性があります"
+            "（uv sync で matplotlib-fontja を入れてください）",
+            stacklevel=3,
+        )
+        return str(plt.rcParams["font.family"][0])
+    warnings.warn(
+        f"日本語フォント {JAPANESE_FONT} が見つからないため、{fallback} を使います"
+        "（uv sync で matplotlib-fontja を入れてください）",
+        stacklevel=3,
+    )
+    return fallback
+
+
+def ensure_japanese_font() -> str:
+    """日本語フォント（標準は IPAexGothic）をmatplotlibに設定する。
+
+    IPAexGothic は依存パッケージ matplotlib-fontja に同梱されたものを使うため、
+    OS に関係なく同じフォントで描画される。見つからない環境では警告を出し、
+    手元の日本語フォント（Meiryo など）を使う。
     `sns.set_theme()` はフォント設定を含むrcParamsを上書きするため、各描画関数の先頭で
     都度呼び出して確実に日本語フォントが有効な状態で描画する。
+
+    Returns:
+        設定したフォントの名前。
     """
-    plt.rcParams["font.family"] = "Meiryo"
-    plt.rcParams["axes.unicode_minus"] = False  # Meiryoではマイナス記号が文字化けするため
+    font = _resolve_japanese_font()
+    plt.rcParams["font.family"] = font
+    # マイナス記号を ASCII のハイフンで描く（日本語フォントによってはU+2212が化けるため）
+    plt.rcParams["axes.unicode_minus"] = False
+    return font
 
 
 def add_caption(fig: plt.Figure, text: str) -> None:
