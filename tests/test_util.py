@@ -72,6 +72,41 @@ def test_ensure_japanese_font_sets_ipaexgothic() -> None:
     assert Path(path).name == "ipaexg.ttf"
 
 
+def test_ensure_japanese_font_does_not_use_dejavu(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+
+    import numpy as np
+    import seaborn as sns
+
+    # 図を描くときに読み込まれるフォントファイルを記録する
+    loaded: list[str] = []
+    original = font_manager._get_font
+
+    def recording_get_font(font_filepaths: tuple, *args: object, **kwargs: object) -> object:
+        # 要素は (フォントファイルのパス, フェイス番号) の組
+        loaded.extend(Path(str(p[0] if isinstance(p, tuple) else p)).name for p in font_filepaths)
+        return original(font_filepaths, *args, **kwargs)
+
+    monkeypatch.setattr(font_manager, "_get_font", recording_get_font)
+    # seaborn のテーマ（フォントを既定に戻す）の後に呼ぶ、いつもの使い方
+    sns.set_theme(style="whitegrid")
+    plotting.ensure_japanese_font()
+    for key in ("font.sans-serif", "font.serif", "font.monospace"):
+        assert not [f for f in plt.rcParams[key] if f.startswith("DejaVu")], key
+    fig, ax = plt.subplots()
+    try:
+        # 日本語・数式・指数の表記・マイナス・凡例を含む図
+        ax.plot(np.arange(5) * 1e6, [-1.0, 2.0, -3.0, 4.0, 5.0], label="系列①")
+        ax.set_title(r"日本語の見出し $\alpha^2 + \mathbf{x}$")
+        ax.text(0, 0, "monospace の文字", family="monospace")
+        ax.legend()
+        fig.savefig(io.BytesIO(), format="png")
+    finally:
+        plt.close(fig)
+    assert "ipaexg.ttf" in loaded
+    assert not [name for name in loaded if name.startswith("DejaVu")], sorted(set(loaded))
+
+
 def test_ensure_japanese_font_falls_back_with_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     plotting._resolve_japanese_font.cache_clear()
     monkeypatch.setattr(plotting, "JAPANESE_FONT", "存在しないフォント")

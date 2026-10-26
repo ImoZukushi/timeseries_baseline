@@ -8,6 +8,8 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
+from util.plotting import ensure_japanese_font
+
 
 def as_1d_float(values: Any) -> np.ndarray:
     """配列・Series・リストを1次元のfloat配列にする。"""
@@ -45,6 +47,8 @@ def new_axes(
     複数のaxが必要な部品では、`ax` に `nrows * ncols` 個のaxの並び（配列）を渡せる。
     """
     if ax is None:
+        # 目盛りなど図を作るときにできる文字も日本語フォントで描く（DejaVu Sans を使わない）
+        ensure_japanese_font()
         fig, axes = plt.subplots(
             nrows, ncols, figsize=figsize, constrained_layout=True, squeeze=False
         )

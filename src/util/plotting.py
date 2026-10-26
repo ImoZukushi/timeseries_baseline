@@ -6,6 +6,7 @@ import contextlib
 import functools
 import warnings
 
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
@@ -53,8 +54,16 @@ def _resolve_japanese_font() -> str:
     return fallback
 
 
+def _with_font_first(font: str, names: list[str]) -> list[str]:
+    """フォント名のリストの先頭に font を置き、DejaVu 系のフォントを外す。"""
+    return [font, *[name for name in names if name != font and not name.startswith("DejaVu")]]
+
+
 def ensure_japanese_font() -> str:
-    """日本語フォント（標準は IPAexGothic）をmatplotlibに設定する。
+    """日本語フォント（標準は IPAexGothic）をmatplotlibに設定し、DejaVu Sans を使わないようにする。
+
+    通常の文字に加え、総称名（sans-serif など）で指定された文字・数式（$...$）も
+    日本語フォントで描く。
 
     IPAexGothic は依存パッケージ matplotlib-fontja に同梱されたものを使うため、
     OS に関係なく同じフォントで描画される。見つからない環境では警告を出し、
@@ -66,9 +75,34 @@ def ensure_japanese_font() -> str:
         設定したフォントの名前。
     """
     font = _resolve_japanese_font()
-    plt.rcParams["font.family"] = font
+    # 総称名（sans-serif・monospace など）で指定された文字も日本語フォントで描く。
+    # matplotlib の既定では総称名の先頭が DejaVu 系なので、DejaVu 系はリストから外す
+    generic_families = {
+        "sans-serif": _with_font_first(font, plt.rcParams["font.sans-serif"]),
+        "serif": _with_font_first(font, plt.rcParams["font.serif"]),
+        "monospace": _with_font_first(font, plt.rcParams["font.monospace"]),
+        "cursive": _with_font_first(font, plt.rcParams["font.cursive"]),
+        "fantasy": _with_font_first(font, plt.rcParams["font.fantasy"]),
+    }
+    matplotlib.rc("font", family=font, **generic_families)
+    # 数式（$...$。指数の表記など）も日本語フォントで描く（既定の fontset は DejaVu Sans）。
+    # IPAexGothic には太字が無いため、数式の太字も通常の太さで描く
+    # （太字を探して警告が出ないように）。
+    # 日本語フォントに無い数学記号は STIX で描く
+    matplotlib.rc(
+        "mathtext",
+        fontset="custom",
+        rm=font,
+        sf=font,
+        tt=font,
+        cal=font,
+        bf=font,
+        it=f"{font}:italic",
+        bfit=f"{font}:italic",
+        fallback="stix",
+    )
     # マイナス記号を ASCII のハイフンで描く（日本語フォントによってはU+2212が化けるため）
-    plt.rcParams["axes.unicode_minus"] = False
+    matplotlib.rc("axes", unicode_minus=False)
     return font
 
 

@@ -61,7 +61,7 @@ from modeling.models import get_model_spec
 from modeling.pipeline import MODEL_STEP, build_pipeline
 from modeling.tasks import is_classification
 from modeling.trainer import CVResult
-from util.plotting import add_caption
+from util.plotting import add_caption, ensure_japanese_font
 
 EVALUATION_DIR = "evaluation"
 
@@ -427,6 +427,8 @@ def _save_curves(
     estimator, X, y, folds, scorer, negate, scale_note = _curve_inputs(config, dataset, cv_result)
     metric = config.primary_metric
     common = "各foldで学習し直した学習・検証スコア（early stoppingなし）。" + scale_note
+    # 図を作る前に日本語フォントを設定する（目盛りなどの文字に DejaVu Sans を使わない）
+    ensure_japanese_font()
     if ev.learning_curve.enabled:
         time_ordered = config.data.time_col is not None
         result = compute_learning_curve(

@@ -47,6 +47,7 @@ ensure_japanese_font()  # IPAexGothic を設定する（sns.set_theme の後に�
 - IPAexGothic (`ipaexg.ttf`) is bundled with the `matplotlib-fontja` dependency, so no OS font installation is needed (`uv sync` is enough).
 - Do **not** hard-code `plt.rcParams["font.family"]` or use `japanize_matplotlib` (it does not import on Python 3.12).
 - If IPAexGothic is unavailable, `ensure_japanese_font()` warns and falls back to an installed Japanese font (Meiryo, Yu Gothic, Noto Sans CJK JP, ...).
+- Do **not** use DejaVu Sans (matplotlib's default). `ensure_japanese_font()` also maps generic families (`sans-serif`, `monospace`, ...) and math text (`$...$`) to IPAexGothic. Call it **before** creating the figure, because tick labels take the font settings at creation time.
 - Drawing functions in `eda`, `evaluation`, and `modeling` already call it internally.
 
 ## Figure Creation

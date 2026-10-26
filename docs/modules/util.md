@@ -107,5 +107,9 @@ plt.close(fig)
 - フォントファイル（`ipaexg.ttf`）は、依存パッケージ `matplotlib-fontja` に同梱されたものを使います。
   OS にインストールする必要はなく、`uv sync` だけで Windows・macOS・Linux のどれでも同じフォントになります。
 - `matplotlib-fontja` は japanize-matplotlib の後継です（japanize-matplotlib は distutils に依存しているため、Python 3.12 では import できません）。
+- 図には DejaVu Sans（matplotlib の既定のフォント）を使いません。`ensure_japanese_font()` は次の 2 つも日本語フォントにします。
+  - 総称名（`sans-serif`・`monospace` など）で指定された文字。DejaVu 系はフォントの候補から外します。
+  - 数式（`$...$`。`mathtext.fontset: custom`）。日本語フォントに無い数学記号は STIX で描きます。
+- 図を作る前に `ensure_japanese_font()` を呼んでください。目盛りなどの文字は、図を作った時点のフォント設定で作られます。
 - IPAexGothic が見つからない環境では、警告を出したうえで、手元の日本語フォントを使います（Meiryo・Yu Gothic・Noto Sans CJK JP などの順に探します）。
 - フォントのライセンス（IPA フォントライセンス v1.0）は、パッケージ内の `matplotlib_fontja/fonts/` にあります。
