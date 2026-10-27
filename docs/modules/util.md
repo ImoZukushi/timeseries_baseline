@@ -111,5 +111,16 @@ plt.close(fig)
   - 総称名（`sans-serif`・`monospace` など）で指定された文字。DejaVu 系はフォントの候補から外します。
   - 数式（`$...$`。`mathtext.fontset: custom`）。日本語フォントに無い数学記号は STIX で描きます。
 - 図を作る前に `ensure_japanese_font()` を呼んでください。目盛りなどの文字は、図を作った時点のフォント設定で作られます。
-- IPAexGothic が見つからない環境では、警告を出したうえで、手元の日本語フォントを使います（Meiryo・Yu Gothic・Noto Sans CJK JP などの順に探します）。
+- `ensure_japanese_font()` は IPAexGothic のフォントファイル（`ipaexg.ttf`）を、パッケージを import せずに次の順で探して登録します。
+  1. 環境変数 `MPL_JAPANESE_FONT_PATH` で指定したパス
+  2. `matplotlib-fontja`（または `japanize-matplotlib`）の配布物の中
+  3. リポジトリの `.venv` の中（Jupyter のカーネルが別の Python 環境でも、`uv sync` 済みなら見つかる）
+  4. OS のフォント（matplotlib のフォント一覧のキャッシュを作った後に入れたものも含む）
+- **SageMaker Studio（JupyterLab）などの Linux 環境:** 日本語フォントが OS に無いことが多いので、次のどれかで使えるようにします。
+  - リポジトリで `uv sync` しておく（`.venv` のフォントファイルが見つかる）。
+  - カーネルの環境に `pip install matplotlib-fontja` で入れる。
+  - `ipaexg.ttf` を置いた場所を `MPL_JAPANESE_FONT_PATH` に指定する。
+- IPAexGothic が見つからない環境では、警告を出したうえで、手元の日本語フォントを使います（Meiryo・Yu Gothic・Noto Sans CJK JP・IPAGothic・TakaoGothic などの順に探します）。
+- 日本語フォントが 1 つも無い場合は、説明の警告を 1 回だけ出し、フォントの設定は既定のままにします（日本語は □ になります）。図を描くたびに出る「文字が無い」という警告・ログは出しません（モデルの学習中に警告が大量に出ないように）。
+- 警告は最初に探したときに 1 回だけ出ます（探した結果はプロセスの中で保持します）。
 - フォントのライセンス（IPA フォントライセンス v1.0）は、パッケージ内の `matplotlib_fontja/fonts/` にあります。

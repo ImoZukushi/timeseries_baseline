@@ -119,6 +119,51 @@ def test_ensure_japanese_font_falls_back_with_warning(monkeypatch: pytest.Monkey
         plotting._resolve_japanese_font.cache_clear()
 
 
+def test_font_file_candidates_without_importing_package(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # 環境変数で指定したパスが最優先
+    monkeypatch.setenv(plotting.FONT_PATH_ENV, str(tmp_path / "my_font.ttf"))
+    candidates = list(plotting._font_file_candidates())
+    assert candidates[0] == tmp_path / "my_font.ttf"
+    # Jupyter のカーネルに matplotlib-fontja が無くても（SageMaker など）、
+    # リポジトリの .venv にあれば、そのフォントファイルが候補に入る
+    monkeypatch.setattr(plotting.importlib.util, "find_spec", lambda name: None)
+    existing = [p for p in plotting._font_file_candidates() if p.is_file()]
+    assert existing and existing[0].name == "ipaexg.ttf"
+
+
+def test_ensure_japanese_font_without_any_japanese_font_warns_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import io
+    import warnings
+
+    import matplotlib
+
+    # 日本語フォントがどこにも無い環境（フォントファイルも代わりのフォントも見つからない）
+    plotting._resolve_japanese_font.cache_clear()
+    monkeypatch.setattr(plotting, "JAPANESE_FONT", "存在しないフォント")
+    monkeypatch.setattr(plotting, "FALLBACK_JAPANESE_FONTS", ())
+    monkeypatch.setattr(plotting, "_font_file_candidates", lambda: iter(()))
+    monkeypatch.setattr(font_manager, "findSystemFonts", lambda *a, **k: [])
+    try:
+        with matplotlib.rc_context(), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            # 学習中に何枚も図を描いても、説明の警告が1回出るだけ
+            # （文字が無いという警告・ログは出さない）
+            for _ in range(3):
+                plotting.ensure_japanese_font()
+                fig, ax = plt.subplots()
+                ax.set_title(r"学習結果 $\alpha^2$")
+                fig.savefig(io.BytesIO(), format="png")
+                plt.close(fig)
+        assert [str(w.message)[:12] for w in caught] == ["日本語フォント（存在しな"]
+        assert not [r for r in caplog.records if "glyph" in r.getMessage()]
+    finally:
+        plotting._resolve_japanese_font.cache_clear()
+
+
 def test_add_caption_adds_text_to_figure() -> None:
     fig, _ax = plt.subplots()
     try:
