@@ -187,3 +187,48 @@ def test_prepare_rejects_different_rolling_min_periods(tmp_path: Path) -> None:
     config = tp.make_config("lightgbm", inputs.spec, "Y1", cutoffs=["2024-03-01"])
     with pytest.raises(tp.LeakageError, match="一致しません"):
         tp.prepare(config, inputs, "Y1")
+
+
+def test_setup_logging_shows_only_warnings_on_console(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import logging
+
+    log_path = tp.setup_logging(tmp_path / "run.log", console_level=logging.WARNING)
+    try:
+        tp.logger.info("情報のログ")
+        tp.logger.warning("警告のログ")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        # 画面には WARNING 以上だけ、ファイルには INFO も残る
+        out = capsys.readouterr().out
+        assert "警告のログ" in out and "情報のログ" not in out
+        text = log_path.read_text(encoding="utf-8")
+        assert "情報のログ" in text and "警告のログ" in text
+    finally:
+        for handler in list(logging.getLogger().handlers):
+            if getattr(handler, "_x50", False):
+                logging.getLogger().removeHandler(handler)
+                handler.close()
+
+
+def test_release_memory_keeps_only_what_the_summary_needs(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    inputs = tp.load_inputs(*_write(tmp_path, *_frames()))
+    config = tp.make_config("lightgbm", inputs.spec, "Y1", cutoffs=["2024-03-01"])
+    dataset = tp.prepare(config, inputs, "Y1")
+    y = dataset.y.copy()
+    # run_experiment の結果の代わり（release_memory が使う属性だけ）
+    result = SimpleNamespace(cv_result=SimpleNamespace(models=[object(), object()]))
+    kept = tp.TargetRun("Y1", dataset, result, pd.DataFrame(), None)  # type: ignore[arg-type]
+    tp.release_memory(kept, keep=True)
+    assert len(kept.result.cv_result.models) == 2 and kept.dataset.frame is not None
+
+    run = tp.TargetRun("Y1", dataset, result, pd.DataFrame(), None)  # type: ignore[arg-type]
+    tp.release_memory(run)
+    # モデルと特徴量の表は手放す。要約に使う目的変数・fold は残す
+    assert run.result.cv_result.models == []
+    assert len(run.dataset.X) == 0 and run.dataset.frame is None and run.dataset.test_frame is None
+    np.testing.assert_array_equal(run.dataset.y, y)
+    assert run.dataset.folds == dataset.folds

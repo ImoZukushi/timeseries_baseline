@@ -199,21 +199,17 @@ def recursive_forecast(
     fut["_step"] = steps
     # テストデータに無い学習専用の列（別の目的変数など）は使わない
     base_columns = [c for c in history.columns if c in fut.columns]
-    hist = history[base_columns].reset_index(drop=True)
+    # 履歴は、特徴量の計算に必要な系列ごとの直近 lookback 行だけを持つ（メモリ・計算量の削減。
+    # 予測値を足すたびに古い行を落とすので、学習期間が長くても履歴の大きさは変わらない）
+    hist = _recent_rows(history[base_columns], builder)
     hist[target] = hist[target].astype(np.float64)
     preds = np.full(len(future), np.nan)
 
     for h in range(1, int(steps.max(initial=0)) + 1):
         current = fut[fut["_step"] == h]
-        # 特徴量の計算に必要な直近 lookback 行だけを系列ごとに取り出す（計算量の削減）
-        ordered = hist.sort_values(builder.sort_keys(), kind="stable")
-        if series_col is None:
-            tail = ordered.tail(builder.lookback)
-        else:
-            tail = ordered.groupby(series_col, sort=False, dropna=False).tail(builder.lookback)
         context = pd.concat(
             [
-                tail[base_columns].assign(**{_IS_FUTURE: False}),
+                hist.assign(**{_IS_FUTURE: False}),
                 current[base_columns].assign(**{_IS_FUTURE: True}),
             ],
             ignore_index=True,
@@ -225,8 +221,26 @@ def recursive_forecast(
             pred = _apply_clip(pred, builder.config.clip)
         preds[current[_ROW].to_numpy()] = pred
         # 予測値を目的変数として履歴に追加し、次のステップのラグの元にする
-        hist = pd.concat([hist, current[base_columns].assign(**{target: pred})], ignore_index=True)
+        hist = _recent_rows(
+            pd.concat([hist, current[base_columns].assign(**{target: pred})], ignore_index=True),
+            builder,
+        )
     return preds
+
+
+def _recent_rows(frame: pd.DataFrame, builder: TargetFeatureBuilder) -> pd.DataFrame:
+    """系列・時刻の順に並べ、系列ごとに直近 `builder.lookback` 行だけを残す。
+
+    インデックスは0始まりの連番に振り直す。
+    """
+    ordered = frame.sort_values(builder.sort_keys(), kind="stable")
+    if builder.series_col is None:
+        recent = ordered.tail(builder.lookback)
+    else:
+        recent = ordered.groupby(builder.series_col, sort=False, dropna=False).tail(
+            builder.lookback
+        )
+    return recent.reset_index(drop=True)
 
 
 @dataclass

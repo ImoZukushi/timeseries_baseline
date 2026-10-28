@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gc
 import hashlib
 import logging
 import re
@@ -53,7 +54,7 @@ import shutil
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -161,28 +162,35 @@ class TargetRun:
 # --- ログ -------------------------------------------------------------------------------
 
 
-def setup_logging(log_path: Path, level: int = logging.INFO) -> Path:
+def setup_logging(
+    log_path: Path, level: int = logging.INFO, console_level: int | None = None
+) -> Path:
     """画面とファイルの両方にログを出す設定をする（同じ設定を2回呼んでも重複しない）。
 
     Args:
         log_path: ログファイルのパス（UTF-8）。
-        level: ログの出力レベル。
+        level: ログの出力レベル（ファイル）。
+        console_level: 画面に出すログのレベル（Noneなら `level` と同じ）。画面への出力量を減らしたい
+            とき（小さいインスタンスの Jupyter など）は `logging.WARNING` にする。ファイルには
+            `level` 以上のログが残る。
 
     Returns:
         ログファイルのパス。
     """
     ensure_parent_dir(log_path)
+    console_level = level if console_level is None else console_level
     root = logging.getLogger()
-    root.setLevel(level)
+    root.setLevel(min(level, console_level))
     for handler in list(root.handlers):
         if getattr(handler, "_x50", False):
             root.removeHandler(handler)
             handler.close()
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    handlers: list[logging.Handler] = [
-        logging.FileHandler(log_path, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(level)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(console_level)
+    handlers: list[logging.Handler] = [file_handler, console_handler]
     for handler in handlers:
         handler.setFormatter(formatter)
         handler._x50 = True  # type: ignore[attr-defined]
@@ -876,6 +884,27 @@ def run_target(
     return run
 
 
+def release_memory(run: TargetRun, keep: bool = False) -> None:
+    """1つの種類の学習が終わった後に、要約に使わない大きなオブジェクトを手放してメモリを回収する。
+
+    要約（`save_summary`）が使うのは、テスト予測・スコア・出力先・目的変数（`dataset.y`）・
+    fold番号だけ。学習済みモデル（各 fold・テスト予測用）と特徴量の表を手放す（モデル・表は
+    出力ディレクトリと MLflow に保存済み）。開いたままの図も閉じる。
+    種類が多い・データが大きいときに、メモリが種類の数だけ積み上がらないようにする。
+
+    Args:
+        run: `run_target` の結果（その場で書き換える）。
+        keep: True ならモデル・表を手放さない（後で使う種類。図を閉じてメモリを回収するだけ）。
+    """
+    if not keep:
+        run.result.cv_result.models.clear()
+        run.dataset = replace(
+            run.dataset, X=run.dataset.X.iloc[:0], X_test=None, frame=None, test_frame=None
+        )
+    plt.close("all")
+    gc.collect()
+
+
 # --- 全種類の要約 -------------------------------------------------------------------
 
 
@@ -1132,6 +1161,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         if i == 0:
             log_folds(run.dataset)
+        # 要約に使わないモデル・特徴量の表を手放す（種類の数だけメモリが積み上がらないように）
+        release_memory(run)
         runs.append(run)
 
     root = args.output_root or outputs_dir() / "experiments"
