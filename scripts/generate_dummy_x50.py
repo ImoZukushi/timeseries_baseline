@@ -24,15 +24,18 @@
 | X31〜X40 | 件数（ポアソン分布の整数） |
 | X41〜X50 | 目的変数と無関係なノイズ |
 
-目的変数（`Y_cat` が Y1〜Y10 の `Y`）は、前日の自分自身（自己相関）・年周期の季節性・一部の説明変数
-から作る正の値。
+目的変数（`Y_cat` が Y1〜Y10 の `Y`）は、水準・一部の説明変数・ノイズから作る正の値で、
+自己相関を持たない（前日の値への回帰・季節性・トレンドは入れない）。
 モデルや前処理の違いが見えるよう、目的変数ごとに次を変える。
 
-- 水準（10〜200）と、季節性の強さ・位相
-- 自己相関の強さ（前日の値への回帰係数 0.3〜0.9）
+- 水準（10〜200）
 - 効く説明変数: Yk には Xk・X(10+k)・X(20+k)・X(30+k) が効く
-  （係数の符号・大きさも目的変数ごとに違う）
-- Y3・Y6・Y9 には緩やかな上昇トレンドがある
+  （係数の符号・大きさも目的変数ごとに違う）。Xk は季節性・トレンドを持つが、それらが目的変数に
+  移らないよう、Xk のランダムな成分だけが効く
+
+自己相関が無いことは Ljung-Box 検定（帰無仮説: 自己相関なし）で確かめる。種類ごとに、欠損を除いた
+観測値の全期間・学習期間・テスト期間のそれぞれで、ラグ 1, 7, 10, 14, 28 の p 値がすべて 0.10 を
+超える（有意水準 0.10 で帰無仮説が棄却されない）まで、説明変数の係数とノイズを引き直す。
 
 欠損: 目的変数・説明変数の両方に、散発的な欠損と連続した欠損を入れる（`add_missing`）。
 値を作った後に「観測できなかった」ものとして欠損にするため、欠損の日も目的変数の値は
@@ -58,6 +61,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from statsmodels.stats.diagnostic import acorr_ljungbox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -72,15 +76,24 @@ OUTPUT_DIR = data_dir() / "synthetic" / "x50"
 TRAIN_FILENAME = "dummy_x50_train.csv"
 TEST_FILENAME = "dummy_x50_test.csv"
 ANSWER_FILENAME = "dummy_x50_test_answer.csv"
+LJUNG_BOX_ALPHA = 0.10  # 目的変数の自己相関の検定の有意水準
+LJUNG_BOX_LAGS = (1, 7, 10, 14, 28)  # 検定するラグ（日数）
+MAX_NOISE_DRAWS = 1000  # 検定を満たすまでノイズを引き直す最大回数
 
 
-def make_dummy_frame(start: str = "2022-01-01", days: int = 1096, seed: int = 0) -> pd.DataFrame:
-    """ダミーデータを作る。
+def make_dummy_frame(
+    start: str = "2022-01-01",
+    days: int = 1096,
+    seed: int = 0,
+    test_start: str = "2025-01-01",
+) -> pd.DataFrame:
+    """ダミーデータを作る（欠損は `add_missing` で入れる）。
 
     Args:
         start: 開始日。
         days: 日数（1行 = 1日）。
         seed: 乱数のシード。
+        test_start: テスト期間の開始日（目的変数の自己相関を期間ごとに検定するために使う）。
 
     Returns:
         列 `date`, `Y1`〜`Y10`, `X1`〜`X50` の DataFrame（日付の昇順）。
@@ -91,14 +104,17 @@ def make_dummy_frame(start: str = "2022-01-01", days: int = 1096, seed: int = 0)
     year_phase = 2 * np.pi * t / 365.25
 
     features: dict[str, np.ndarray] = {}
+    # X1〜X10 のランダムな成分（目的変数にはこの成分だけを効かせる）
+    random_parts: dict[int, np.ndarray] = {}
     # X1〜X10: 年周期・週周期・緩やかなトレンドを持つ連続値
     for i in range(1, 11):
-        features[f"X{i}"] = (
+        structured = (
             rng.normal(0, 1) * np.sin(year_phase + rng.uniform(0, 2 * np.pi))
             + 0.3 * np.sin(2 * np.pi * t / 7 + i)
             + rng.normal(0, 0.002) * t
-            + rng.normal(0, 0.5, days)
         )
+        random_parts[i] = rng.normal(0, 0.5, days)
+        features[f"X{i}"] = structured + random_parts[i]
     # X11〜X20: 右に裾の長い正の値
     for i in range(11, 21):
         features[f"X{i}"] = rng.lognormal(
@@ -116,8 +132,12 @@ def make_dummy_frame(start: str = "2022-01-01", days: int = 1096, seed: int = 0)
     for i in range(41, N_FEATURES + 1):
         features[f"X{i}"] = rng.normal(0, 1, days)
 
+    # add_missing と同じ欠損の位置で、欠損を除いた観測値の自己相関を検定する
+    test_start_index = int((dates < pd.Timestamp(test_start)).sum())
+    masks = _target_missing_masks(days, test_start_index, np.random.default_rng([seed, 1]))
     targets = {
-        col: _make_target(k, features, year_phase, rng) for k, col in enumerate(TARGET_COLS, 1)
+        col: _make_target(k, features, random_parts, masks[col], test_start_index, rng)
+        for k, col in enumerate(TARGET_COLS, 1)
     }
     frame = pd.DataFrame({"date": dates, **targets})
     return pd.concat([frame, pd.DataFrame(features)], axis=1)
@@ -129,41 +149,68 @@ def _standardize(values: np.ndarray) -> np.ndarray:
     return np.nan_to_num(centered)
 
 
+def ljung_box_min_pvalue(values: np.ndarray) -> float:
+    """欠損を除いた系列の Ljung-Box 検定の、`LJUNG_BOX_LAGS` の中で最小の p 値を返す。
+
+    点数の半分以上のラグは検定しない。検定できるラグが無ければ 1.0 を返す。
+    """
+    observed = values[~np.isnan(values)]
+    lags = [lag for lag in LJUNG_BOX_LAGS if lag < observed.size / 2]
+    if not lags:
+        return 1.0
+    return float(acorr_ljungbox(observed, lags=lags)["lb_pvalue"].min())
+
+
+def _has_no_autocorrelation(values: np.ndarray, test_start_index: int) -> bool:
+    """全期間・学習期間・テスト期間のすべてで、検定が棄却されなければ True を返す。"""
+    periods = (values, values[:test_start_index], values[test_start_index:])
+    return all(ljung_box_min_pvalue(part) > LJUNG_BOX_ALPHA for part in periods)
+
+
 def _make_target(
-    k: int, features: dict[str, np.ndarray], year_phase: np.ndarray, rng: np.random.Generator
+    k: int,
+    features: dict[str, np.ndarray],
+    random_parts: dict[int, np.ndarray],
+    missing: np.ndarray,
+    test_start_index: int,
+    rng: np.random.Generator,
 ) -> np.ndarray:
-    """k 番目の目的変数を作る（前日の値への回帰 + 季節性 + 説明変数の効果 + ノイズ。正の値）。
+    """k 番目の目的変数を作る（水準 + 説明変数の効果 + ノイズ。自己相関の無い正の値）。
 
     Args:
         k: 目的変数の番号（1〜10）。Xk・X(10+k)・X(20+k)・X(30+k) が効く。
         features: 説明変数。
-        year_phase: 年周期の位相（ラジアン）。
+        random_parts: X1〜X10 のランダムな成分（番号 → 値）。
+        missing: 欠損になる日（検定は欠損を除いた観測値で行う）。
+        test_start_index: テスト期間の最初の日の位置。
         rng: 乱数生成器。
 
     Returns:
         目的変数の値。
+
+    Raises:
+        RuntimeError: `MAX_NOISE_DRAWS` 回引き直しても検定を満たさない場合。
     """
-    days = len(year_phase)
+    days = len(missing)
     level = rng.uniform(10, 200)
-    phi = rng.uniform(0.3, 0.9)  # 前日の値への回帰係数（自己相関の強さ）
-    seasonal = level * rng.uniform(0.02, 0.25) * np.sin(year_phase + rng.uniform(0, 2 * np.pi))
-    trend = level * 0.0003 * np.arange(days) if k % 3 == 0 else 0.0
-    # 説明変数の効果（水準に比例した大きさ。符号・強さは目的変数ごとに乱数で決める）
-    coefs = rng.uniform(0.02, 0.08, size=4) * rng.choice([-1, 1], size=4) * level
-    effect = (
-        coefs[0] * _standardize(features[f"X{k}"])
-        + coefs[1] * _standardize(np.log(features[f"X{10 + k}"]))
-        + coefs[2] * _standardize(features[f"X{20 + k}"])
-        + coefs[3] * _standardize(features[f"X{30 + k}"])
+    # 説明変数の効果の元（どの成分も日ごとに独立なので、目的変数に自己相関は移らない）
+    drivers = np.column_stack(
+        [
+            _standardize(random_parts[k]),
+            _standardize(np.log(features[f"X{10 + k}"])),
+            _standardize(features[f"X{20 + k}"]),
+            _standardize(features[f"X{30 + k}"]),
+        ]
     )
-    noise = rng.normal(0, level * 0.03, days)
-    base = level + seasonal + trend
-    y = np.empty(days)
-    value = level
-    for i in range(days):
-        value = phi * value + (1 - phi) * base[i] + effect[i] + noise[i]
-        y[i] = max(value, level * 0.05)
-    return y
+    # 自己相関が無い系列でも検定は有意水準の割合で棄却されるので、棄却されなくなるまで
+    # 係数（水準に比例した大きさ。符号・強さは目的変数ごとに乱数で決める）とノイズを引き直す
+    for _ in range(MAX_NOISE_DRAWS):
+        coefs = rng.uniform(0.02, 0.08, size=4) * rng.choice([-1, 1], size=4) * level
+        noise = rng.normal(0, level * 0.03, days)
+        y = np.maximum(level + drivers @ coefs + noise, level * 0.05)
+        if _has_no_autocorrelation(np.where(missing, np.nan, y), test_start_index):
+            return y
+    raise RuntimeError(f"Y{k}: {MAX_NOISE_DRAWS}回引き直しても自己相関の検定を満たしません")
 
 
 def _missing_mask(
@@ -203,6 +250,13 @@ def _missing_mask(
     return mask
 
 
+def _target_missing_masks(
+    days: int, test_start_index: int, rng: np.random.Generator
+) -> dict[str, np.ndarray]:
+    """目的変数の種類ごとの、欠損にする日を返す（種類ごとに別々の日）。"""
+    return {col: _missing_mask(days, test_start_index, 0.02, 2, 1, 35, rng) for col in TARGET_COLS}
+
+
 def add_missing(frame: pd.DataFrame, test_start: str, seed: int = 0) -> pd.DataFrame:
     """wide 型のダミーデータの目的変数・説明変数に、散発的な欠損と連続した欠損を入れる。
 
@@ -222,8 +276,7 @@ def add_missing(frame: pd.DataFrame, test_start: str, seed: int = 0) -> pd.DataF
     test_start_index = int((frame["date"] < pd.Timestamp(test_start)).sum())
     updates: dict[str, pd.Series] = {}
     # 目的変数: 種類ごとに別々の日を欠損にする
-    for col in TARGET_COLS:
-        mask = _missing_mask(days, test_start_index, 0.02, 2, 1, 35, rng)
+    for col, mask in _target_missing_masks(days, test_start_index, rng).items():
         updates[col] = frame[col].mask(mask)
     # 説明変数: 日付ごとの値なので、long 型にすると同じ日付の全種類の行で欠損になる
     feature_cols = [c for c in frame.columns if c not in ("date", *TARGET_COLS)]
@@ -289,7 +342,7 @@ def main(argv: list[str] | None = None) -> None:
 
     days = (pd.Timestamp(args.end) - pd.Timestamp(args.start)).days + 1
     # 学習・テストを1本の系列として作ってから分ける（テスト期間も同じ過程の続きになる）
-    frame = make_dummy_frame(args.start, days, args.seed)
+    frame = make_dummy_frame(args.start, days, args.seed, args.test_start)
     # 目的変数・説明変数に欠損を入れる（散発的な欠損と連続した欠損。学習・テストの両方）
     frame = add_missing(frame, args.test_start, args.seed)
     parts = zip(
@@ -297,6 +350,8 @@ def main(argv: list[str] | None = None) -> None:
         split_train_test(frame, args.test_start),
         strict=True,
     )
+    min_pvalue = min(ljung_box_min_pvalue(frame[col].to_numpy()) for col in TARGET_COLS)
+    print(f"目的変数の Ljung-Box 検定の最小の p 値（全期間）: {min_pvalue:.3f}")
     for filename, part in parts:
         output = ensure_parent_dir(args.output_dir / filename)
         part.to_csv(output, index=False, date_format="%Y-%m-%d")
