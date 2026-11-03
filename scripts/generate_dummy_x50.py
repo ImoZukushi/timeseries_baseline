@@ -10,10 +10,16 @@ X は `X1`〜`X50`。
 
 | ファイル | 期間（既定） | 列 |
 |---|---|---|
-| `dummy_x50_train.csv` | 2022-01-01〜2024-12-31 | `date`, `Y_cat`, `irregular_flg`, `Y`, X |
+| `dummy_x50_train.csv` | 2022-01-01〜2024-12-31 | `date`, `Y_cat`, フラグ2つ, `Y`, X |
 | `dummy_x50_test.csv` | 2025-01-01〜2025-12-31 | `date`, `Y_cat`, `irregular_flg`, X（`Y` なし） |
 
-`irregular_flg` は bool 型で、True の行は学習にも予測にも使わない（1行ごとに約3%）。
+フラグはどれも int 型で、0 か 1 をとる（1行ごとに約3%が1）。
+
+- `irregular_flg`（学習・テスト）: 特徴量として使う。学習データでは、1 の行の `Y` は通常の範囲から
+  外れた負の値（その種類の平均の -0.5〜-1.5 倍。予測の下限 0 より下）になる。テストでは、1 の行の
+  予測を後処理で 0 にする想定。
+- `eliminate_flg`（学習だけ。フラグ2つのもう一方）: 1 の行は学習に使わない。`Y` は通常の値のまま。
+
 テストの正解ファイルは作らない。
 
 行は日付の昇順、同じ日付の中は `Y1`, `Y2`, …, `Y10` の順。
@@ -38,7 +44,8 @@ X は `X1`〜`X50`。
   移らないよう、Xk のランダムな成分だけが効く
 
 自己相関が無いことは Ljung-Box 検定（帰無仮説: 自己相関なし）で確かめる。種類ごとに、欠損と
-`irregular_flg` が True の行を除いた観測値の全期間・学習期間・テスト期間のそれぞれで、
+`irregular_flg` が 1 の行（通常の範囲から外れた値にする行）を除いた観測値の全期間・
+学習期間・テスト期間のそれぞれで、
 ラグ 1, 7, 10, 14, 28 の p 値がすべて 0.10 を超える（有意水準 0.10 で帰無仮説が棄却されない）まで、
 説明変数の係数とノイズを引き直す。
 
@@ -78,8 +85,11 @@ VALUE_COL = "Y"  # long 型の表で、目的変数の値を入れる列
 OUTPUT_DIR = data_dir() / "synthetic" / "x50"
 TRAIN_FILENAME = "dummy_x50_train.csv"
 TEST_FILENAME = "dummy_x50_test.csv"
-IRREGULAR_COL = "irregular_flg"  # True の行は学習にも予測にも使わない
-IRREGULAR_RATE = 0.03  # irregular_flg が True になる行の割合
+IRREGULAR_COL = "irregular_flg"  # 特徴量として使うフラグ（1 の行の Y は通常の範囲から外れる）
+IRREGULAR_RATE = 0.03  # irregular_flg が 1 になる行の割合
+ELIMINATE_COL = "eliminate_flg"  # 学習データだけのフラグ（1 の行は学習に使わない）
+ELIMINATE_RATE = 0.03  # eliminate_flg が 1 になる行の割合
+IRREGULAR_SCALE = (0.5, 1.5)  # irregular_flg が 1 の行の Y = -（種類の平均 × この範囲の一様乱数）
 LJUNG_BOX_ALPHA = 0.10  # 目的変数の自己相関の検定の有意水準
 LJUNG_BOX_LAGS = (1, 7, 10, 14, 28)  # 検定するラグ（日数）
 MAX_NOISE_DRAWS = 1000  # 検定を満たすまでノイズを引き直す最大回数
@@ -136,7 +146,8 @@ def make_dummy_frame(
     for i in range(41, N_FEATURES + 1):
         features[f"X{i}"] = rng.normal(0, 1, days)
 
-    # add_missing と同じ欠損の位置を使い、欠損と irregular_flg の行を除いて自己相関を検定する
+    # add_missing と同じ欠損の位置を使い、欠損と irregular_flg の行（通常の範囲から外れた値に
+    # する行）を除いて自己相関を検定する
     test_start_index = int((dates < pd.Timestamp(test_start)).sum())
     masks = _target_missing_masks(days, test_start_index, np.random.default_rng([seed, 1]))
     irregular = _irregular_masks(days, seed)
@@ -188,7 +199,7 @@ def _make_target(
         k: 目的変数の番号（1〜10）。Xk・X(10+k)・X(20+k)・X(30+k) が効く。
         features: 説明変数。
         random_parts: X1〜X10 のランダムな成分（番号 → 値）。
-        missing: 検定から除く日（欠損になる日と irregular_flg が True の日）。
+        missing: 検定から除く日（欠損になる日と irregular_flg が 1 の日）。
         test_start_index: テスト期間の最初の日の位置。
         rng: 乱数生成器。
 
@@ -265,7 +276,7 @@ def _target_missing_masks(
 
 
 def _irregular_masks(days: int, seed: int) -> dict[str, np.ndarray]:
-    """目的変数の種類ごとの、`irregular_flg` を True にする日を返す。
+    """目的変数の種類ごとの、`irregular_flg` を 1 にする日を返す（True の日）。
 
     値の生成・欠損とは別の乱数を使う。
     """
@@ -328,7 +339,11 @@ def to_long(frame: pd.DataFrame) -> pd.DataFrame:
 def split_train_test(
     frame: pd.DataFrame, test_start: str, seed: int = 0
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """`irregular_flg` を付けた long 型の学習データ・テストデータ（目的変数の値なし）に分ける。
+    """フラグを付けた long 型の学習データ・テストデータ（目的変数の値なし）に分ける。
+
+    - `irregular_flg`（学習・テスト。int 型の 0/1）: 学習データでは、1 の行の `Y` を通常の範囲から
+      外れた負の値にする（欠損の行は欠損のまま）。
+    - `eliminate_flg`（学習だけ。int 型の 0/1）: 1 の行は学習に使わない。`Y` は変えない。
 
     Args:
         frame: `make_dummy_frame` の結果（wide 型）。
@@ -339,13 +354,23 @@ def split_train_test(
         (学習データ, テストデータ)。いずれも long 型。
     """
     long = to_long(frame)
-    flags = pd.Series(False, index=long.index, dtype=bool)
+    irregular = pd.Series(0, index=long.index, dtype="int64")
     # 行は日付の昇順なので、種類ごとの行の並びは日付の順
     for col, mask in _irregular_masks(frame["date"].nunique(), seed).items():
-        flags[long[CAT_COL] == col] = mask
-    long.insert(long.columns.get_loc(CAT_COL) + 1, IRREGULAR_COL, flags)
+        irregular[long[CAT_COL] == col] = mask.astype("int64")
+    long.insert(long.columns.get_loc(CAT_COL) + 1, IRREGULAR_COL, irregular)
     is_test = long["date"] >= pd.Timestamp(test_start)
     train = long[~is_test].reset_index(drop=True)
+    # irregular_flg が 1 の行の Y は、通常の範囲から外れた負の値にする（値の生成とは別の乱数）
+    rng = np.random.default_rng([seed, 3])
+    flagged = (train[IRREGULAR_COL] == 1) & train[VALUE_COL].notna()
+    level = train.groupby(CAT_COL)[VALUE_COL].transform("mean")
+    factor = rng.uniform(*IRREGULAR_SCALE, len(train))
+    train[VALUE_COL] = train[VALUE_COL].mask(flagged, -level * factor)
+    eliminate = (np.random.default_rng([seed, 4]).random(len(train)) < ELIMINATE_RATE).astype(
+        "int64"
+    )
+    train.insert(train.columns.get_loc(IRREGULAR_COL) + 1, ELIMINATE_COL, eliminate)
     # テストデータには目的変数の値を入れない（予測時に分からない値のため）。種類（Y_cat）は残す
     test = long[is_test].drop(columns=VALUE_COL).reset_index(drop=True)
     return train, test
@@ -380,7 +405,8 @@ def main(argv: list[str] | None = None) -> None:
         output = ensure_parent_dir(args.output_dir / filename)
         part.to_csv(output, index=False, date_format="%Y-%m-%d")
         dates = part["date"]
-        missing = part.drop(columns=["date", CAT_COL, IRREGULAR_COL]).isna().mean()
+        flags = [c for c in (IRREGULAR_COL, ELIMINATE_COL) if c in part.columns]
+        missing = part.drop(columns=["date", CAT_COL, *flags]).isna().mean()
         print(
             f"保存: {output}（{len(part)}行 × {part.shape[1]}列、"
             f"{dates.min():%Y-%m-%d}〜{dates.max():%Y-%m-%d}、"
