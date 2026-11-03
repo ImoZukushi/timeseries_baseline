@@ -10,15 +10,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 import re
 import subprocess
+import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from util.paths import get_repo_root
+
+logger = logging.getLogger(__name__)
 
 # MLflow import時の案内メッセージを抑制する
 os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
@@ -100,14 +107,31 @@ class MLflowTracker:
 
         self._mlflow = mlflow
         mlflow.set_tracking_uri(tracking_uri or default_tracking_uri())
+        self._artifact_root = artifact_root or (get_repo_root() / "mlruns" / "artifacts")
         experiment = mlflow.get_experiment_by_name(experiment_name)
+        if experiment is not None and not artifact_location_is_writable(
+            experiment.artifact_location
+        ):
+            # 別の環境・別の場所で作られた実験（mlruns/ を移した・コピーした場合など）は、成果物の
+            # 保存先がこの環境に無い。指標の記録は通るが log_artifact で失敗するので、この環境用の
+            # 実験（保存先は mlruns/artifacts）に記録する
+            fallback = f"{experiment_name}__{_location_key()}"
+            warnings.warn(
+                f"MLflow の実験 {experiment_name} の成果物の保存先"
+                f"（{experiment.artifact_location}）に書き込めないため、実験 {fallback} に"
+                "記録します（mlruns/ を別の場所から移した場合など）",
+                stacklevel=2,
+            )
+            experiment_name = fallback
+            experiment = mlflow.get_experiment_by_name(experiment_name)
         if experiment is None:
-            root = artifact_root or (get_repo_root() / "mlruns" / "artifacts")
             self.experiment_id = mlflow.create_experiment(
-                experiment_name, artifact_location=(root / experiment_name).as_uri()
+                experiment_name,
+                artifact_location=(self._artifact_root / experiment_name).as_uri(),
             )
         else:
             self.experiment_id = experiment.experiment_id
+        self.experiment_name = experiment_name
 
     @contextmanager
     def start_run(
@@ -131,11 +155,18 @@ class MLflowTracker:
         self._mlflow.log_metrics({sanitize_metric_key(k): v for k, v in metrics.items()}, step=step)
 
     def log_artifact(self, path: Path, artifact_path: str | None = None) -> None:
-        """ファイルまたはディレクトリを記録する。"""
-        if path.is_dir():
-            self._mlflow.log_artifacts(str(path), artifact_path=artifact_path)
-        else:
-            self._mlflow.log_artifact(str(path), artifact_path=artifact_path)
+        """ファイルまたはディレクトリを記録する。
+
+        記録に失敗しても（保存先に書き込めない場合など）学習・評価は止めず、警告をログに出す。
+        記録しようとしたファイルは、出力ディレクトリに残っている。
+        """
+        try:
+            if path.is_dir():
+                self._mlflow.log_artifacts(str(path), artifact_path=artifact_path)
+            else:
+                self._mlflow.log_artifact(str(path), artifact_path=artifact_path)
+        except (OSError, self._mlflow.exceptions.MlflowException) as error:
+            logger.warning("MLflow に成果物を記録できませんでした（%s）: %s", path.name, error)
 
     def active_run_id(self) -> str | None:
         """実行中のrun ID。"""
@@ -171,6 +202,28 @@ def flatten_dict(data: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
         else:
             flat[full_key] = value
     return flat
+
+
+def artifact_location_is_writable(location: str) -> bool:
+    """成果物の保存先（MLflow の artifact location）に、この環境から書き込めるかを返す。
+
+    ローカルのファイル（`file:` または パス）は、フォルダを作って書き込めるかを確かめる。
+    リモート（`s3:` など）は確かめずに True を返す。
+    """
+    parsed = urlparse(location)
+    if parsed.scheme not in ("", "file") and len(parsed.scheme) > 1:
+        return True
+    path = Path(url2pathname(parsed.path)) if parsed.scheme == "file" else Path(location)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return os.access(path, os.W_OK)
+
+
+def _location_key() -> str:
+    """このリポジトリの場所ごとに決まる短い識別子（別の場所のリポジトリと実験を分けるため）。"""
+    return hashlib.sha256(str(get_repo_root()).encode("utf-8")).hexdigest()[:8]
 
 
 def _git_commit_hash() -> str:
