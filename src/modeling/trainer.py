@@ -69,6 +69,7 @@ def fit_pipeline(
     y_valid: np.ndarray | None = None,
     params: dict[str, Any] | None = None,
     early_stopping: bool = True,
+    sample_weight: np.ndarray | None = None,
 ) -> Pipeline:
     """Pipelineを1つ学習する。
 
@@ -83,6 +84,8 @@ def fit_pipeline(
         y_valid: early stopping用の検証データの目的変数。
         params: モデルパラメータ（Noneなら設定値）。
         early_stopping: Falseならearly stoppingを無効化する（全データ再学習時）。
+        sample_weight: 学習データの行ごとの重み（Noneなら重みなし）。モデルの `fit` に渡す。
+            early stopping の検証データには重みを付けない。
 
     Returns:
         学習済みPipeline。
@@ -105,6 +108,8 @@ def fit_pipeline(
         fit_kwargs = spec.fit_kwargs(
             Xt_valid, y_valid, rounds, X_train=Xt_train, y_train=y_train, record_history=record
         )
+    if sample_weight is not None:
+        fit_kwargs["sample_weight"] = np.asarray(sample_weight, dtype=np.float64)
     pipeline.named_steps[MODEL_STEP].fit(Xt_train, y_train, **fit_kwargs)
     return pipeline
 

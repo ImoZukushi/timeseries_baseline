@@ -14,7 +14,7 @@ from modeling.config import ExperimentConfig
 from modeling.experiment import prepare_dataset
 from modeling.models import available_models, get_model_spec
 from modeling.pipeline import DropColumns, ToModelInput, build_pipeline, import_class
-from modeling.trainer import run_cv
+from modeling.trainer import fit_pipeline, run_cv
 
 _TASK_SETTINGS = {
     "regression": ("y_reg", ["rmse", "mae"]),
@@ -210,3 +210,26 @@ def test_time_series_cv_leaves_initial_rows_unpredicted(synthetic_frame: pd.Data
     assert np.isnan(result.oof_pred[:first_valid]).all()
     assert not np.isnan(result.oof_pred[first_valid:]).any()
     assert np.isfinite(result.oof_scores["rmse"])
+
+
+@pytest.mark.parametrize("model_name", ["lightgbm", "xgboost"])
+def test_fit_pipeline_uses_sample_weight(model_name: str) -> None:
+    # 2つのグループで目的変数が違うデータ。片方に大きな重みを付けると、予測がそちらに寄る
+    n = 200
+    X = pd.DataFrame({"x": np.zeros(n)})
+    y = np.where(np.arange(n) < n // 2, 0.0, 10.0)
+    config = ExperimentConfig.model_validate(
+        {
+            "name": "w",
+            "task": "regression",
+            "data": {"train_path": "unused.csv", "target": "y"},
+            "cv": {"method": "kfold", "n_splits": 2},
+            "model": {"name": model_name, "params": {"n_estimators": 20}},
+            "metrics": ["mae"],
+        }
+    )
+    plain = fit_pipeline(config, X, y).predict(X).mean()
+    weights = np.where(y > 0, 9.0, 1.0)
+    weighted = fit_pipeline(config, X, y, sample_weight=weights).predict(X).mean()
+    assert plain == pytest.approx(5.0, abs=0.5)
+    assert weighted == pytest.approx(9.0, abs=0.5)
