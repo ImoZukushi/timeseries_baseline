@@ -70,11 +70,13 @@ class TimeCutoffSplit(BaseCrossValidator):
         end = _parse_time(self.valid_end) if self.valid_end is not None else None
         uppers: list[dt.datetime | None] = [*bounds[1:], end]
         for lower, upper in zip(bounds, uppers, strict=True):
+            # pandas の Timestamp どうしで比べる（NumPy の datetime64[ns] と Python の datetime を
+            # 直接比べると、ns の値が整数として扱われて TypeError になるため）。
             # 欠損（NaT）との比較はFalseになるため、時刻の無い行はどちらにも入らない
-            train_mask = times < lower
-            valid_mask = times >= lower
+            train_mask = (times < pd.Timestamp(lower)).to_numpy()
+            valid_mask = (times >= pd.Timestamp(lower)).to_numpy()
             if upper is not None:
-                valid_mask = valid_mask & (times < upper)
+                valid_mask = valid_mask & (times < pd.Timestamp(upper)).to_numpy()
             train_idx = np.flatnonzero(train_mask)
             valid_idx = np.flatnonzero(valid_mask)
             if len(train_idx) == 0 or len(valid_idx) == 0:
@@ -95,12 +97,12 @@ def _parse_time(value: str | dt.datetime | dt.date) -> dt.datetime:
     return dt.datetime.fromisoformat(value)
 
 
-def _as_datetime_series(values: Any) -> np.ndarray:
-    """時刻列を `datetime64` の配列に変換する（文字列・date型も受け付ける）。"""
-    series = pd.Series(values)
+def _as_datetime_series(values: Any) -> pd.Series:
+    """時刻列を `datetime64` の Series に変換する（文字列・date型も受け付ける。単位は問わない）。"""
+    series = pd.Series(values).reset_index(drop=True)
     if not pd.api.types.is_datetime64_any_dtype(series):
         series = pd.to_datetime(series)
-    return series.to_numpy()
+    return series
 
 
 def make_cv(cfg: CVConfig, time_column: str | None = None) -> BaseCrossValidator | Any:

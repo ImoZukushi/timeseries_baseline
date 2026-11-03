@@ -108,6 +108,18 @@ def test_time_cutoff_split_accepts_string_time_column() -> None:
     assert folds[0][1].tolist() == list(range(5, 10))
 
 
+@pytest.mark.parametrize("unit", ["ns", "us", "ms", "s"])
+def test_time_cutoff_split_works_for_any_datetime_unit(unit: str) -> None:
+    # pandas 2 系では日付が datetime64[ns] で読まれる。NumPy で ns と datetime を直接比べると
+    # TypeError（int と datetime の比較）になるので、どの単位でも同じ分割になることを確かめる
+    frame = _frame(30)
+    frame["ts"] = frame["ts"].astype(f"datetime64[{unit}]")
+    folds = list(TimeCutoffSplit("ts", ["2024-01-11", "2024-01-21"]).split(frame))
+    expected = list(TimeCutoffSplit("ts", ["2024-01-11", "2024-01-21"]).split(_frame(30)))
+    for (train, valid), (train_ref, valid_ref) in zip(folds, expected, strict=True):
+        assert train.tolist() == train_ref.tolist() and valid.tolist() == valid_ref.tolist()
+
+
 def test_time_cutoff_split_rejects_unsorted_cutoffs() -> None:
     with pytest.raises(ValueError):
         list(TimeCutoffSplit("ts", ["2024-01-20", "2024-01-10"]).split(_frame(30)))
