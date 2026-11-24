@@ -185,6 +185,21 @@ def unsupported_objective(spec: ModelSpec, objective: str) -> ValueError:
 
 
 _REGISTRY: dict[str, ModelSpec] = {}
+# 任意依存が無いなどの理由で登録できなかったモデル（モデル名 → 理由）
+_UNAVAILABLE: dict[str, str] = {}
+
+
+def register_unavailable(names: tuple[str, ...] | list[str], reason: str) -> None:
+    """登録できなかったモデルと、その理由を記録する（`get_model_spec` のエラーに出す）。
+
+    任意依存（torch など）を import できない環境で、モデル名の書き間違いと区別できるようにする。
+
+    Args:
+        names: 登録できなかったモデル名。
+        reason: 理由（インストール方法など）。
+    """
+    for name in names:
+        _UNAVAILABLE[name] = reason
 
 
 def register_model[SpecT: type[ModelSpec]](spec_cls: SpecT) -> SpecT:
@@ -204,9 +219,12 @@ def get_model_spec(name: str) -> ModelSpec:
     """モデル名から `ModelSpec` を取得する。
 
     Raises:
-        KeyError: 未登録のモデル名の場合。
+        KeyError: 未登録のモデル名の場合（任意依存が無くて登録できなかったモデルなら、
+            その理由も出す）。
     """
     if name not in _REGISTRY:
+        if name in _UNAVAILABLE:
+            raise KeyError(f"モデル {name} はこの環境では使えません: {_UNAVAILABLE[name]}")
         raise KeyError(f"未登録のモデルです: {name}（利用可能: {available_models()}）")
     return _REGISTRY[name]
 
