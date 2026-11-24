@@ -1,7 +1,7 @@
 """モデル定義（`ModelSpec`）のレジストリ。
 
 このパッケージをimportすると、同梱のモデルがすべてレジストリに登録される。
-NN（`mlp` / `cnn1d`）は任意依存のtorch・skorchがインストールされている場合のみ登録する
+NN（`mlp` / `tabm` / `cnn1d`）は任意依存のtorch・skorchがインストールされている場合のみ登録する
 （`uv sync --extra nn`）。
 """
 

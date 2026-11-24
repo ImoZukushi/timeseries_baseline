@@ -35,7 +35,7 @@ YAML ──load_experiment_config──▶ ExperimentConfig（pydantic で検証
 | `tasks` | タスクの種類（`Task`）・目的変数のエンコード・予測値の取り出し |
 | `metrics` | 評価指標のレジストリ |
 | `cv` | CV分割（`make_folds`・日時カットオフの `TimeCutoffSplit`） |
-| `models` | モデル定義 `ModelSpec` とレジストリ（LightGBM・XGBoost・線形・定数・MLP・1次元CNN） |
+| `models` | モデル定義 `ModelSpec` とレジストリ（LightGBM・XGBoost・線形・定数・MLP・TabM・1次元CNN） |
 | `pipeline` | 特徴量ステップ＋モデルの sklearn Pipeline の組み立て |
 | `dataset` | 学習用データ一式 `Dataset` と `cross_validate` |
 | `trainer` | CV学習ループ（`run_cv`）と結果 `CVResult` |
@@ -179,7 +179,7 @@ CV分割は `prepare_dataset` で一度だけ計算し、チューニングの�
 |---|---|
 | `name` | 登録済みのモデル名（下の「モデル」） |
 | `params` | ハイパーパラメータ（モデルのコンストラクタ引数。NN は skorch の引数） |
-| `early_stopping_rounds` | 検証 fold を使った early stopping（NN は学習 fold から切り出した10%を使う） |
+| `early_stopping_rounds` | 検証 fold を使った early stopping（NN も検証 fold のエポックごとの損失で判定する。検証データを渡さずに `fit` したときだけ学習データから10%を切り出す） |
 
 early stopping は検証 fold で打ち切り回数を決めるため、OOF スコアはわずかに楽観的になります。
 
@@ -385,9 +385,30 @@ features:
 | `linear` | 欠損補完＋標準化＋ Ridge / LogisticRegression | 全タスク | `alpha`（回帰）/ `C`（分類） |
 | `dummy` | 定数予測（平均・事前確率）。超えるべき最低ラインの確認用 | 全タスク | なし |
 | `mlp` | 全結合ネット（PyTorch + skorch） | 全タスク | `lr`, `batch_size`, `module__dropout`, 幅・層数 |
+| `tabm` | TabM（k 個の MLP を BatchEnsemble で重み共有したアンサンブル。periodic 埋め込み付き）。数千行の表データ・CPU 向け | 全タスク | `lr`, `optimizer__weight_decay`, `batch_size`, 層の数と幅, `module__dropout`, periodic 埋め込み |
 | `cnn1d` | 1次元CNN。特徴量の**並び順を系列とみなす**ので、ラグ特徴量など順序に意味がある入力で使う | 全タスク | `lr`, `batch_size`, `module__dropout`, チャネル数・カーネル幅 |
 
-`mlp` / `cnn1d` は任意依存です。`uv sync --extra nn` で torch・skorch を入れたときだけ登録されます。
+`mlp` / `tabm` / `cnn1d` は任意依存です。`uv sync --extra nn` で torch・skorch を入れたときだけ登録されます。
+
+### ニューラルネット（`mlp` / `tabm` / `cnn1d`）
+
+木のモデルと同じ学習ループ（`fit_pipeline`・`run_cv`・チューニング）で動くよう、次の点をそろえています。
+
+| 項目 | 扱い |
+|---|---|
+| 構成 | `NetPipeline`: 欠損値補完（中央値）→ `NetInputScaler` → skorch のネットワーク。前処理は学習側だけで fit する |
+| スケーリング | `params` の `scaler`: `"standard"`（`mlp`・`cnn1d` の既定）/ `"quantile"`（`tabm` の既定。分位点で正規分布に写す。値が2種類以下の列は標準化） |
+| early stopping | `fit_kwargs` が検証 fold を渡し、`EarlyStopping(load_best=True)` で最良エポックに戻す。全データ再学習は fold 平均の最良エポック数 |
+| `n_estimators` | `max_epochs`（エポック数の上限）に読み替える |
+| `sample_weight` | 行ごとの重みを学習の損失に掛ける（検証の損失には付けない） |
+| 目的関数（`objective_params`） | `l2`・`l1`・`huber`・`quantile`・`poisson`。回帰は目的変数を学習側の平均・標準偏差で標準化して学習し、予測で戻す（`huber` の閾値は元の尺度で指定。`poisson` は標準化せず、出力を予測の対数とする） |
+| カテゴリ列 | `categorical_encoding = "onehot"` |
+| SHAP | permutation 法。重いので `shap_max_samples = 100` |
+
+`tabm` は k 個（既定16）のメンバーそれぞれの損失の平均で学習し、予測はメンバーの平均（分類は確率の平均）にします。
+既定は 3層×128、ドロップアウト 0.1、periodic 埋め込み 8次元（CPU 向けに TabM 論文の既定 3層×256・16次元より軽くしている）、AdamW（学習率 2e-3・重み減衰 3e-4）、バッチサイズ 64、
+最大 500 エポックです。ネットワークの引数は `module__` を付けて渡します（例: `module__k`, `module__n_blocks`,
+`module__d_block`, `module__arch_type`（`"tabm"` / `"tabm-mini"`）, `module__num_embeddings`（`"periodic"` / `None`））。
 
 ### モデルを追加する
 
