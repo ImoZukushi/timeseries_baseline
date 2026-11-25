@@ -275,3 +275,14 @@ def test_net_input_scaler_keeps_flags_standardized() -> None:
     assert abs(np.median(out[:, 0])) < 0.1
     assert np.unique(out[:, 1]).size == 2
     assert out[:, 1].mean() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_tabm_search_space_is_bounded_for_cpu() -> None:
+    # CPU で1試行が数分に収まるよう、計算量を決める値の上限を抑えている
+    study = optuna.create_study(sampler=optuna.samplers.RandomSampler(seed=0))
+    for _ in range(200):
+        params = get_model_spec("tabm").search_space(study.ask(), Task.REGRESSION)
+        assert 1 <= params["module__n_blocks"] <= 3
+        assert 64 <= params["module__d_block"] <= 256
+        assert params["batch_size"] in (64, 128)
+        assert params.get("module__d_embedding", 8) in (8, 16)

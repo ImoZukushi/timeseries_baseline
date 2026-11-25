@@ -851,19 +851,27 @@ class TabMSpec(_NeuralNetSpec):
     default_scaler: ClassVar[ScalerKind] = "quantile"
 
     def search_space(self, trial: Any, task: Task) -> dict[str, Any]:
-        """学習率・重み減衰・層の数と幅・ドロップアウト・periodic 埋め込みの探索空間。"""
+        """学習率・重み減衰・層の数と幅・ドロップアウト・periodic 埋め込みの探索空間（CPU 向け）。
+
+        1試行で Y_cat ごとに CV の fold 数 + 1 回学習するので、CPU で1試行が数分に収まるよう、
+        計算量を決める値（層の数・幅・埋め込みの次元・バッチサイズ）の上限を抑えている。
+        一番重い組み合わせ（3層×256・埋め込み16次元・バッチ64）は、TabM 論文の既定とほぼ同じ
+        （約800行・51特徴量で 1 fit 30〜60秒）。以前の上限（4層×512・32次元・バッチ32）では
+        1試行に20分以上かかった。
+        """
         use_embeddings = trial.suggest_categorical("num_embeddings", ["periodic", "none"])
         params: dict[str, Any] = {
             "lr": trial.suggest_float("lr", 1e-4, 5e-3, log=True),
             "optimizer__weight_decay": trial.suggest_float("weight_decay", 1e-5, 1e-1, log=True),
-            "batch_size": trial.suggest_categorical("batch_size", [32, 64, 128]),
-            "module__n_blocks": trial.suggest_int("n_blocks", 1, 4),
-            "module__d_block": trial.suggest_int("d_block", 64, 512, step=64),
+            # 小さいバッチは1エポックのステップ数が増えて遅いので、64 以上にする
+            "batch_size": trial.suggest_categorical("batch_size", [64, 128]),
+            "module__n_blocks": trial.suggest_int("n_blocks", 1, 3),
+            "module__d_block": trial.suggest_int("d_block", 64, 256, step=64),
             "module__dropout": trial.suggest_float("module__dropout", 0.0, 0.5),
             "module__num_embeddings": None if use_embeddings == "none" else "periodic",
         }
         if use_embeddings == "periodic":
-            params["module__d_embedding"] = trial.suggest_int("d_embedding", 8, 32, step=8)
+            params["module__d_embedding"] = trial.suggest_int("d_embedding", 8, 16, step=8)
             params["module__frequency_init_scale"] = trial.suggest_float(
                 "frequency_init_scale", 0.01, 10.0, log=True
             )
